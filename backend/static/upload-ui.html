@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MindSpace Upload</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --text: #111827;
+        --muted: #64748b;
+        --line: #e5edf6;
+        --blue: #2563eb;
+        --blue-soft: #eef6ff;
+        --green: #16a34a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(920px, 100%);
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 22px;
+      }
+
+      .brand {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .eyebrow {
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(28px, 8vw, 44px);
+        line-height: 1.08;
+        letter-spacing: 0;
+      }
+
+      .api {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.86);
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--green);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+        gap: 16px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 26px;
+        background: var(--card);
+        padding: 18px;
+        box-shadow: 0 16px 34px rgba(15, 23, 42, 0.06);
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+
+      .hint {
+        margin: 0 0 18px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      label {
+        display: block;
+        margin: 14px 0 8px;
+        color: #334155;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-height: 48px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: #fbfdff;
+        color: var(--text);
+        font: inherit;
+        padding: 0 14px;
+        outline: none;
+      }
+
+      input[type="file"] {
+        padding: 12px;
+      }
+
+      button {
+        min-height: 50px;
+        border: 0;
+        border-radius: 17px;
+        background: var(--blue);
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 900;
+        padding: 0 18px;
+      }
+
+      button.secondary {
+        background: var(--blue-soft);
+        color: var(--blue);
+      }
+
+      .row {
+        display: flex;
+        gap: 10px;
+      }
+
+      .row > * {
+        flex: 1;
+      }
+
+      .list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .doc {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 12px;
+        background: #fff;
+      }
+
+      .badge {
+        display: grid;
+        place-items: center;
+        width: 54px;
+        height: 44px;
+        border-radius: 15px;
+        background: var(--blue-soft);
+        color: var(--blue);
+        font-size: 11px;
+        font-weight: 900;
+      }
+
+      .doc strong {
+        display: block;
+        overflow-wrap: anywhere;
+        font-size: 14px;
+      }
+
+      .doc span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .toast {
+        margin-top: 14px;
+        min-height: 22px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .empty {
+        border: 1px dashed var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      @media (max-width: 780px) {
+        main {
+          padding: 18px;
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="topbar">
+        <div class="brand">
+          <div class="eyebrow">MindSpace Upload</div>
+          <h1>把资料先稳稳传进去。</h1>
+        </div>
+        <div class="api"><span class="dot"></span><span id="apiText">连接中</span></div>
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>上传资料</h2>
+          <p class="hint">这个入口绕开 Expo Go 的 Android 文件读取限制，先把上传、解析、检索闭环跑通。</p>
+
+          <label for="spaceSelect">知识空间</label>
+          <select id="spaceSelect"></select>
+
+          <label for="fileInput">选择文件</label>
+          <input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
+
+          <div class="row" style="margin-top: 16px">
+            <button id="uploadBtn">上传并解析</button>
+            <button id="refreshBtn" class="secondary">刷新</button>
+          </div>
+
+          <div id="toast" class="toast"></div>
+        </section>
+
+        <aside class="panel">
+          <h2>新建空间</h2>
+          <p class="hint">比如“高数”“软创赛资料库”“机器学习论文”。</p>
+          <label for="spaceName">空间名称</label>
+          <input id="spaceName" placeholder="输入空间名称" />
+          <button id="createBtn" style="width: 100%; margin-top: 14px">创建空间</button>
+        </aside>
+      </div>
+
+      <section class="panel" style="margin-top: 16px">
+        <h2>已上传资料</h2>
+        <div id="docs" class="list"></div>
+      </section>
+    </main>
+
+    <script>
+      const apiText = document.querySelector("#apiText");
+      const spaceSelect = document.querySelector("#spaceSelect");
+      const fileInput = document.querySelector("#fileInput");
+      const uploadBtn = document.querySelector("#uploadBtn");
+      const refreshBtn = document.querySelector("#refreshBtn");
+      const createBtn = document.querySelector("#createBtn");
+      const spaceName = document.querySelector("#spaceName");
+      const docs = document.querySelector("#docs");
+      const toast = document.querySelector("#toast");
+
+      let spaces = [];
+
+      function setToast(text) {
+        toast.textContent = text;
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        if (!response.ok) {
+          let detail = response.statusText;
+          try {
+            detail = (await response.json()).detail || detail;
+          } catch {}
+          throw new Error(detail);
+        }
+        return response.json();
+      }
+
+      async function loadSpaces() {
+        spaces = await api("/spaces");
+        apiText.textContent = "API 已连接";
+        spaceSelect.innerHTML = "";
+        if (spaces.length === 0) {
+          const created = await api("/spaces", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "默认知识空间", description: "浏览器上传入口创建" }),
+          });
+          spaces = [created];
+        }
+        for (const space of spaces) {
+          const option = document.createElement("option");
+          option.value = space.id;
+          option.textContent = `${space.name} (${space.document_count || 0} 个文件)`;
+          spaceSelect.appendChild(option);
+        }
+        await loadDocuments();
+      }
+
+      async function loadDocuments() {
+        const spaceId = spaceSelect.value;
+        if (!spaceId) return;
+        const data = await api(`/spaces/${spaceId}/documents`);
+        docs.innerHTML = "";
+        if (data.length === 0) {
+          docs.innerHTML = '<div class="empty">这个空间还没有上传资料。</div>';
+          return;
+        }
+        for (const item of data) {
+          const row = document.createElement("div");
+          row.className = "doc";
+          row.innerHTML = `
+            <div class="badge">${item.file_type.toUpperCase()}</div>
+            <div>
+              <strong>${item.filename}</strong>
+              <span>${item.chunk_count} 个文本片段</span>
+            </div>
+          `;
+          docs.appendChild(row);
+        }
+      }
+
+      async function createSpace() {
+        const name = spaceName.value.trim();
+        if (!name) return setToast("先输入空间名称。");
+        const created = await api("/spaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, description: "浏览器上传入口创建" }),
+        });
+        setToast(`已创建：${created.name}`);
+        spaceName.value = "";
+        await loadSpaces();
+        spaceSelect.value = created.id;
+        await loadDocuments();
+      }
+
+      async function uploadFile() {
+        const file = fileInput.files?.[0];
+        const spaceId = spaceSelect.value;
+        if (!spaceId) return setToast("先选择知识空间。");
+        if (!file) return setToast("先选择一个 PDF / Word / txt / md 文件。");
+
+        const form = new FormData();
+        form.append("file", file);
+        uploadBtn.disabled = true;
+        setToast(`正在上传：${file.name}`);
+        try {
+          const uploaded = await api(`/spaces/${spaceId}/files`, {
+            method: "POST",
+            body: form,
+          });
+          setToast(`上传完成：${uploaded.filename || file.name}，解析出 ${uploaded.chunk_count} 个片段。`);
+          fileInput.value = "";
+          await loadSpaces();
+          spaceSelect.value = spaceId;
+          await loadDocuments();
+        } catch (error) {
+          setToast(`上传失败：${error.message}`);
+        } finally {
+          uploadBtn.disabled = false;
+        }
+      }
+
+      spaceSelect.addEventListener("change", loadDocuments);
+      uploadBtn.addEventListener("click", uploadFile);
+      refreshBtn.addEventListener("click", loadSpaces);
+      createBtn.addEventListener("click", createSpace);
+
+      loadSpaces().catch(error => {
+        apiText.textContent = "API 连接失败";
+        setToast(error.message);
+      });
+    </script>
+  </body>
+</html>

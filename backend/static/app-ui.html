@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>MindSpace</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --surface: #ffffff;
+        --surface-2: #eef4ff;
+        --text: #101828;
+        --muted: #667085;
+        --line: #e6edf7;
+        --blue: #1478ff;
+        --green: #16a36f;
+        --amber: #d97706;
+        --red: #e5484d;
+        --shadow: 0 12px 30px rgba(28, 45, 80, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(560px, 100%);
+        min-height: 100vh;
+        margin: 0 auto;
+        padding: calc(14px + env(safe-area-inset-top)) 16px calc(34px + env(safe-area-inset-bottom));
+      }
+
+      .screen {
+        display: none;
+      }
+
+      .screen.active {
+        display: block;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 54px;
+        margin-bottom: 14px;
+      }
+
+      .title {
+        min-width: 0;
+      }
+
+      .eyebrow {
+        margin-bottom: 3px;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        overflow-wrap: anywhere;
+        font-size: 28px;
+        line-height: 1.15;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        margin-bottom: 12px;
+        font-size: 17px;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        font-size: 15px;
+        line-height: 1.35;
+        letter-spacing: 0;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        flex: 0 0 auto;
+        gap: 7px;
+        min-height: 34px;
+        padding: 0 11px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.86);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--green);
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 9px;
+        align-items: center;
+      }
+
+      button {
+        min-height: 42px;
+        border: 0;
+        border-radius: 14px;
+        background: var(--blue);
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 800;
+        padding: 0 14px;
+      }
+
+      button.icon {
+        width: 42px;
+        min-width: 42px;
+        padding: 0;
+        border-radius: 50%;
+        background: var(--surface);
+        color: var(--text);
+        box-shadow: var(--shadow);
+      }
+
+      button.secondary {
+        background: var(--surface-2);
+        color: var(--blue);
+      }
+
+      button.ghost {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      button.dark {
+        background: var(--text);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-height: 46px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+        color: var(--text);
+        font: inherit;
+        font-size: 14px;
+        padding: 0 13px;
+        outline: none;
+      }
+
+      input[type="file"] {
+        min-height: 50px;
+        padding: 12px;
+      }
+
+      .row {
+        display: flex;
+        gap: 9px;
+      }
+
+      .row > * {
+        flex: 1;
+      }
+
+      .panel {
+        margin-bottom: 13px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: var(--surface);
+        padding: 15px;
+        box-shadow: var(--shadow);
+      }
+
+      .space-list,
+      .doc-list,
+      .chunk-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .space-card,
+      .doc-card,
+      .chunk-card {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        color: var(--text);
+        text-align: left;
+        padding: 14px;
+      }
+
+      .chunk-card.hit {
+        border-color: var(--blue);
+        box-shadow: 0 0 0 3px rgba(20, 120, 255, 0.12);
+      }
+
+      .space-card {
+        display: grid;
+        gap: 10px;
+      }
+
+      .doc-card {
+        display: grid;
+        gap: 10px;
+      }
+
+      .card-open {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        min-height: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--text);
+        padding: 0;
+        text-align: left;
+        box-shadow: none;
+      }
+
+      .delete-btn {
+        justify-self: end;
+        min-height: 34px;
+        border-radius: 12px;
+        background: #fff1f2;
+        color: var(--red);
+        padding: 0 12px;
+        box-shadow: none;
+      }
+
+      .folder-result {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        color: var(--text);
+        text-align: left;
+        padding: 14px;
+      }
+
+      .mark {
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        width: 46px;
+        height: 46px;
+        border-radius: 15px;
+        background: #eaf7f1;
+        color: var(--green);
+        font-size: 18px;
+        font-weight: 900;
+      }
+
+      .mark.blue {
+        background: var(--surface-2);
+        color: var(--blue);
+      }
+
+      .mark.amber {
+        background: #fff7e6;
+        color: var(--amber);
+      }
+
+      .card-main {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .card-main strong {
+        display: block;
+        overflow-wrap: anywhere;
+        font-size: 15px;
+      }
+
+      .meta {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+
+      .stat {
+        min-height: 68px;
+        border-radius: 16px;
+        background: #f8fbff;
+        padding: 11px 8px;
+        text-align: center;
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 20px;
+      }
+
+      .stat span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .folder-tabs,
+      .segmented {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 3px;
+      }
+
+      .folder-tab,
+      .segment {
+        flex: 0 0 auto;
+        min-height: 38px;
+        border-radius: 999px;
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--line);
+        box-shadow: none;
+      }
+
+      .folder-tab.active,
+      .segment.active {
+        border-color: var(--text);
+        background: var(--text);
+        color: #fff;
+      }
+
+      .upload-box {
+        display: grid;
+        gap: 10px;
+      }
+
+      .toast {
+        min-height: 22px;
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .toast.danger {
+        color: var(--red);
+      }
+
+      .empty {
+        border: 1px dashed var(--line);
+        border-radius: 18px;
+        color: var(--muted);
+        padding: 20px 14px;
+        text-align: center;
+        font-size: 14px;
+      }
+
+      .viewer {
+        width: 100%;
+        height: 72vh;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: #fff;
+      }
+
+      .cloud {
+        position: relative;
+        min-height: 330px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+        overflow: hidden;
+      }
+
+      .word {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        max-width: 46%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 900;
+        line-height: 1;
+      }
+
+      .snippet {
+        margin-top: 8px;
+        color: #344054;
+        font-size: 14px;
+        line-height: 1.65;
+        overflow-wrap: anywhere;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section id="homeScreen" class="screen active">
+        <div class="topbar">
+          <div class="title">
+            <div class="eyebrow">MindSpace</div>
+            <h1>知识空间</h1>
+          </div>
+          <div class="status"><span class="dot"></span><span id="apiText">连接中</span></div>
+        </div>
+
+        <section class="panel">
+          <div class="row">
+            <input id="spaceName" placeholder="新建空间，比如 高数" />
+            <button id="createSpaceBtn">新建</button>
+          </div>
+          <div id="homeToast" class="toast"></div>
+        </section>
+
+        <div id="spaceList" class="space-list"></div>
+      </section>
+
+      <section id="spaceScreen" class="screen">
+        <div class="topbar">
+          <div class="toolbar">
+            <button id="backHomeBtn" class="icon" aria-label="返回">‹</button>
+            <div class="title">
+              <div class="eyebrow">空间</div>
+              <h1 id="spaceTitle">资料</h1>
+            </div>
+          </div>
+          <button id="refreshBtn" class="ghost">刷新</button>
+        </div>
+
+        <section class="panel">
+          <div class="stats">
+            <div class="stat"><strong id="docCount">0</strong><span>资料</span></div>
+            <div class="stat"><strong id="folderCount">0</strong><span>文件夹</span></div>
+            <div class="stat"><strong id="chunkCount">0</strong><span>片段</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>文件夹</h2>
+          <div id="folderTabs" class="folder-tabs"></div>
+          <div class="row" style="margin-top: 11px">
+            <input id="folderName" placeholder="新建文件夹" />
+            <button id="createFolderBtn" class="secondary">添加</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>上传资料</h2>
+          <div class="upload-box">
+            <input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
+            <button id="uploadBtn">上传并解析</button>
+          </div>
+          <div id="spaceToast" class="toast"></div>
+        </section>
+
+        <section class="panel">
+          <h2>空间搜索</h2>
+          <div class="row">
+            <input id="spaceQueryInput" placeholder="搜索这个空间里的知识点" />
+            <button id="spaceSearchBtn" class="dark">搜索</button>
+          </div>
+          <div id="spaceResults" class="chunk-list" style="margin-top: 12px"></div>
+        </section>
+
+        <section class="panel">
+          <h2>当前文件夹</h2>
+          <div id="docs" class="doc-list"></div>
+        </section>
+      </section>
+
+      <section id="documentScreen" class="screen">
+        <div class="topbar">
+          <div class="toolbar">
+            <button id="backSpaceBtn" class="icon" aria-label="返回">‹</button>
+            <div class="title">
+              <div class="eyebrow" id="documentType">资料</div>
+              <h1 id="documentTitle">文件</h1>
+            </div>
+          </div>
+        </div>
+
+        <div class="segmented" style="margin-bottom: 13px">
+          <button class="segment active" data-tab="preview">预览</button>
+          <button class="segment" data-tab="cloud">词云</button>
+          <button class="segment" data-tab="chunks">片段</button>
+        </div>
+
+        <section id="previewTab" class="doc-tab panel">
+          <iframe id="viewer" class="viewer" title="文件预览"></iframe>
+        </section>
+
+        <section id="cloudTab" class="doc-tab panel hidden">
+          <h2>资料词云</h2>
+          <div id="cloud" class="cloud"></div>
+        </section>
+
+        <section id="chunksTab" class="doc-tab panel hidden">
+          <h2>资料片段</h2>
+          <div class="row">
+            <input id="docQueryInput" placeholder="在这个文件里搜索" />
+            <button id="docSearchBtn" class="dark">搜索</button>
+          </div>
+          <div id="chunks" class="chunk-list" style="margin-top: 12px"></div>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const screens = {
+        home: document.querySelector("#homeScreen"),
+        space: document.querySelector("#spaceScreen"),
+        document: document.querySelector("#documentScreen"),
+      };
+      const apiText = document.querySelector("#apiText");
+      const spaceName = document.querySelector("#spaceName");
+      const createSpaceBtn = document.querySelector("#createSpaceBtn");
+      const homeToast = document.querySelector("#homeToast");
+      const spaceList = document.querySelector("#spaceList");
+      const backHomeBtn = document.querySelector("#backHomeBtn");
+      const spaceTitle = document.querySelector("#spaceTitle");
+      const refreshBtn = document.querySelector("#refreshBtn");
+      const docCount = document.querySelector("#docCount");
+      const folderCount = document.querySelector("#folderCount");
+      const chunkCount = document.querySelector("#chunkCount");
+      const folderTabs = document.querySelector("#folderTabs");
+      const folderName = document.querySelector("#folderName");
+      const createFolderBtn = document.querySelector("#createFolderBtn");
+      const fileInput = document.querySelector("#fileInput");
+      const uploadBtn = document.querySelector("#uploadBtn");
+      const spaceToast = document.querySelector("#spaceToast");
+      const spaceQueryInput = document.querySelector("#spaceQueryInput");
+      const spaceSearchBtn = document.querySelector("#spaceSearchBtn");
+      const spaceResults = document.querySelector("#spaceResults");
+      const docs = document.querySelector("#docs");
+      const backSpaceBtn = document.querySelector("#backSpaceBtn");
+      const documentType = document.querySelector("#documentType");
+      const documentTitle = document.querySelector("#documentTitle");
+      const viewer = document.querySelector("#viewer");
+      const cloud = document.querySelector("#cloud");
+      const docQueryInput = document.querySelector("#docQueryInput");
+      const docSearchBtn = document.querySelector("#docSearchBtn");
+      const chunks = document.querySelector("#chunks");
+      const segments = [...document.querySelectorAll(".segment")];
+      const docTabs = {
+        preview: document.querySelector("#previewTab"),
+        cloud: document.querySelector("#cloudTab"),
+        chunks: document.querySelector("#chunksTab"),
+      };
+
+      let spaces = [];
+      let folders = [];
+      let documents = [];
+      let activeSpaceId = null;
+      let activeFolderId = null;
+      let activeDocument = null;
+      let activeChunks = [];
+      let spaceSearchHits = [];
+      let activeSearchQuery = "";
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function setToast(target, text, danger = false) {
+        target.textContent = text;
+        target.className = danger ? "toast danger" : "toast";
+      }
+
+      function showScreen(name) {
+        Object.entries(screens).forEach(([key, element]) => {
+          element.classList.toggle("active", key === name);
+        });
+        window.scrollTo({ top: 0, behavior: "instant" });
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        if (!response.ok) {
+          let detail = response.statusText;
+          try {
+            detail = (await response.json()).detail || detail;
+          } catch {}
+          throw new Error(detail);
+        }
+        return response.json();
+      }
+
+      async function ensureDefaultSpace() {
+        if (spaces.length > 0) return;
+        const created = await api("/spaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "默认空间", description: "自动创建" }),
+        });
+        spaces = [created];
+      }
+
+      function getActiveSpace() {
+        return spaces.find(space => String(space.id) === String(activeSpaceId));
+      }
+
+      async function loadSpaces() {
+        spaces = await api("/spaces");
+        await ensureDefaultSpace();
+        apiText.textContent = "已连接";
+        renderSpaces();
+      }
+
+      function renderSpaces() {
+        spaceList.innerHTML = "";
+        if (!spaces.length) {
+          spaceList.innerHTML = '<div class="empty">还没有空间</div>';
+          return;
+        }
+        for (const space of spaces) {
+          const card = document.createElement("div");
+          card.className = "space-card";
+          card.innerHTML = `
+            <button class="card-open" type="button" aria-label="进入 ${escapeHtml(space.name || "知识空间")}">
+              <div class="mark">${escapeHtml((space.name || "知").slice(0, 1))}</div>
+              <div class="card-main">
+                <strong>${escapeHtml(space.name || "知识空间")}</strong>
+                <div class="meta">${space.document_count || 0} 份资料 · ${space.chunk_count || 0} 个片段</div>
+              </div>
+            </button>
+            <button class="delete-btn" type="button">删除</button>
+          `;
+          card.querySelector(".card-open").addEventListener("click", () => openSpace(space.id));
+          card.querySelector(".delete-btn").addEventListener("click", () =>
+            deleteSpace(space).catch(error => setToast(homeToast, error.message, true))
+          );
+          spaceList.appendChild(card);
+        }
+      }
+
+      async function createSpace() {
+        const name = spaceName.value.trim();
+        if (!name) return setToast(homeToast, "先输入空间名称", true);
+        const created = await api("/spaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, description: "" }),
+        });
+        spaceName.value = "";
+        setToast(homeToast, `已创建：${created.name}`);
+        await loadSpaces();
+      }
+
+      async function deleteSpace(space) {
+        const name = space.name || "这个空间";
+        if (!confirm(`确定删除“${name}”吗？里面的文件和片段都会一起删除。`)) return;
+        await api(`/spaces/${space.id}`, { method: "DELETE" });
+        if (String(activeSpaceId) === String(space.id)) {
+          activeSpaceId = null;
+          activeFolderId = null;
+        }
+        setToast(homeToast, `已删除：${name}`);
+        await loadSpaces();
+      }
+
+      async function openSpace(spaceId) {
+        activeSpaceId = spaceId;
+        activeFolderId = null;
+        spaceResults.innerHTML = "";
+        spaceQueryInput.value = "";
+        await loadFolders();
+        const space = getActiveSpace();
+        spaceTitle.textContent = space?.name || "资料";
+        docCount.textContent = space?.document_count || 0;
+        chunkCount.textContent = space?.chunk_count || 0;
+        folderCount.textContent = folders.length;
+        showScreen("space");
+      }
+
+      async function loadFolders(keepFolderId) {
+        folders = await api(`/spaces/${activeSpaceId}/folders`);
+        activeFolderId = keepFolderId || activeFolderId || folders[0]?.id || null;
+        if (!folders.some(folder => String(folder.id) === String(activeFolderId))) {
+          activeFolderId = folders[0]?.id || null;
+        }
+        renderFolders();
+        await loadDocuments();
+      }
+
+      function renderFolders() {
+        folderTabs.innerHTML = "";
+        if (!folders.length) {
+          folderTabs.innerHTML = '<div class="empty">还没有文件夹</div>';
+          return;
+        }
+        for (const folder of folders) {
+          const tab = document.createElement("button");
+          tab.className = String(folder.id) === String(activeFolderId) ? "folder-tab active" : "folder-tab";
+          tab.textContent = `${folder.name} · ${folder.document_count || 0}`;
+          tab.addEventListener("click", async () => {
+            activeFolderId = folder.id;
+            renderFolders();
+            await loadDocuments();
+          });
+          folderTabs.appendChild(tab);
+        }
+      }
+
+      async function createFolder() {
+        const name = folderName.value.trim();
+        if (!name) return setToast(spaceToast, "先输入文件夹名称", true);
+        const created = await api(`/spaces/${activeSpaceId}/folders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        folderName.value = "";
+        setToast(spaceToast, `已添加文件夹：${created.name}`);
+        await loadFolders(created.id);
+      }
+
+      async function loadDocuments() {
+        if (!activeFolderId) {
+          docs.innerHTML = '<div class="empty">先添加一个文件夹</div>';
+          return;
+        }
+        documents = await api(`/spaces/${activeSpaceId}/documents?folder_id=${activeFolderId}`);
+        renderDocuments();
+      }
+
+      function renderDocuments() {
+        docs.innerHTML = "";
+        if (!documents.length) {
+          docs.innerHTML = '<div class="empty">这个文件夹还没有资料</div>';
+          return;
+        }
+        for (const item of documents) {
+          const card = document.createElement("div");
+          card.className = "doc-card";
+          card.innerHTML = `
+            <button class="card-open" type="button" aria-label="打开 ${escapeHtml(item.filename)}">
+            <div class="mark blue">${escapeHtml(item.file_type || "文").toUpperCase()}</div>
+            <div class="card-main">
+              <strong>${escapeHtml(item.filename)}</strong>
+              <div class="meta">${item.chunk_count || 0} 个片段 · OCR ${escapeHtml(item.ocr_status || "")}</div>
+            </div>
+            </button>
+            <button class="delete-btn" type="button">删除</button>
+          `;
+          card.querySelector(".card-open").addEventListener("click", () => openDocument(item.id));
+          card.querySelector(".delete-btn").addEventListener("click", () =>
+            deleteDocument(item).catch(error => setToast(spaceToast, error.message, true))
+          );
+          docs.appendChild(card);
+        }
+      }
+
+      async function deleteDocument(item) {
+        if (!confirm(`确定删除“${item.filename}”吗？`)) return;
+        await api(`/documents/${item.id}`, { method: "DELETE" });
+        setToast(spaceToast, `已删除：${item.filename}`);
+        await loadSpaces();
+        await openSpace(activeSpaceId);
+      }
+
+      async function uploadFile() {
+        const file = fileInput.files?.[0];
+        if (!activeSpaceId || !activeFolderId) return setToast(spaceToast, "先选择文件夹", true);
+        if (!file) return setToast(spaceToast, "先选择一个文件", true);
+        const form = new FormData();
+        form.append("folder_id", activeFolderId);
+        form.append("file", file);
+        uploadBtn.disabled = true;
+        setToast(spaceToast, `正在上传：${file.name}`);
+        try {
+          const uploaded = await api(`/spaces/${activeSpaceId}/files`, { method: "POST", body: form });
+          fileInput.value = "";
+          setToast(spaceToast, `上传完成：解析出 ${uploaded.chunk_count} 个片段`);
+          await loadSpaces();
+          await openSpace(activeSpaceId);
+        } catch (error) {
+          setToast(spaceToast, `上传失败：${error.message}`, true);
+        } finally {
+          uploadBtn.disabled = false;
+        }
+      }
+
+      async function searchSpace() {
+        const query = spaceQueryInput.value.trim();
+        if (!query) return setToast(spaceToast, "先输入搜索词", true);
+        const data = await api(`/spaces/${activeSpaceId}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, limit: 30 }),
+        });
+        activeSearchQuery = query;
+        spaceSearchHits = data.results || [];
+        renderFolderSearchGroups(spaceSearchHits);
+      }
+
+      function renderFolderSearchGroups(items) {
+        spaceResults.innerHTML = "";
+        if (!items.length) {
+          spaceResults.innerHTML = '<div class="empty">没有搜到相关片段</div>';
+          return;
+        }
+        const groups = new Map();
+        for (const item of items) {
+          const key = String(item.folder_id || "none");
+          if (!groups.has(key)) {
+            groups.set(key, {
+              folder_id: item.folder_id,
+              folder_name: item.folder_name || "未分类",
+              hits: [],
+              documents: new Set(),
+            });
+          }
+          const group = groups.get(key);
+          group.hits.push(item);
+          group.documents.add(item.document_id);
+        }
+        for (const group of groups.values()) {
+          const button = document.createElement("button");
+          button.className = "folder-result";
+          button.type = "button";
+          button.innerHTML = `
+            <div class="card-main">
+              <strong>${escapeHtml(group.folder_name)}</strong>
+              <div class="meta">${group.hits.length} 处命中 · ${group.documents.size} 个文件</div>
+            </div>
+            <span class="muted">进入</span>
+          `;
+          button.addEventListener("click", () => renderFolderSearchHits(group));
+          spaceResults.appendChild(button);
+        }
+      }
+
+      function renderFolderSearchHits(group) {
+        spaceResults.innerHTML = "";
+        const back = document.createElement("button");
+        back.className = "ghost";
+        back.type = "button";
+        back.textContent = `‹ 返回命中文件夹`;
+        back.addEventListener("click", () => renderFolderSearchGroups(spaceSearchHits));
+        spaceResults.appendChild(back);
+
+        for (const item of group.hits) {
+          const row = document.createElement("button");
+          row.className = "chunk-card";
+          row.type = "button";
+          row.innerHTML = `
+            <h3>${escapeHtml(item.filename || "文件")}</h3>
+            <div class="meta">${escapeHtml(item.location_label || "")}</div>
+            <div class="snippet">${escapeHtml(item.context_text || item.snippet || item.text || "")}</div>
+          `;
+          row.addEventListener("click", () =>
+            openSearchHit(item).catch(error => setToast(spaceToast, error.message, true))
+          );
+          spaceResults.appendChild(row);
+        }
+      }
+
+      async function openSearchHit(item) {
+        activeFolderId = item.folder_id || activeFolderId;
+        if (activeFolderId) {
+          await loadFolders(activeFolderId);
+        }
+        await openDocument(item.document_id, {
+          chunkId: item.chunk_id,
+          query: activeSearchQuery,
+          pageNumber: extractPageNumber(item.location_label),
+          openPreview: true,
+        });
+      }
+
+      function extractPageNumber(label) {
+        const match = String(label || "").match(/Page\s+(\d+)/i);
+        return match ? Number(match[1]) : null;
+      }
+
+      function renderSearchResults(target, items) {
+        target.innerHTML = "";
+        if (!items.length) {
+          target.innerHTML = '<div class="empty">没有搜到相关片段</div>';
+          return;
+        }
+        for (const item of items) {
+          const row = document.createElement("div");
+          row.className = "chunk-card";
+          row.innerHTML = `
+            <h3>${escapeHtml(item.filename || item.location_label || "片段")}</h3>
+            <div class="meta">${escapeHtml(item.location_label || "")}</div>
+            <div class="snippet">${escapeHtml(item.context_text || item.snippet || item.text || "")}</div>
+          `;
+          target.appendChild(row);
+        }
+      }
+
+      async function openDocument(documentId, options = {}) {
+        const chunkQuery = options.chunkId ? `?focus_chunk_id=${options.chunkId}` : "";
+        activeDocument = await api(`/documents/${documentId}${chunkQuery}`);
+        activeChunks = activeDocument.chunks || [];
+        documentTitle.textContent = activeDocument.filename || "文件";
+        documentType.textContent = (activeDocument.file_type || "资料").toUpperCase();
+        const params = new URLSearchParams();
+        if (options.pageNumber) params.set("focus_page", options.pageNumber);
+        if (options.chunkId) params.set("focus_chunk_id", options.chunkId);
+        const focusQuery = params.toString() ? `?${params.toString()}` : "";
+        const pageHash = options.pageNumber ? `#page-${options.pageNumber}` : options.chunkId ? `#chunk-${options.chunkId}` : "";
+        viewer.src = `/documents/${documentId}/viewer${focusQuery}${pageHash}`;
+        renderChunks(activeChunks, options.chunkId);
+        setDocumentTab(options.openPreview ? "preview" : options.chunkId ? "chunks" : "preview");
+        showScreen("document");
+        await loadWordCloud(documentId);
+        if (options.chunkId && !options.openPreview) {
+          docQueryInput.value = options.query || "";
+          requestAnimationFrame(() => {
+            document.querySelector(`[data-chunk-id="${options.chunkId}"]`)?.scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+          });
+        }
+      }
+
+      function setDocumentTab(tabName) {
+        segments.forEach(button => button.classList.toggle("active", button.dataset.tab === tabName));
+        Object.entries(docTabs).forEach(([key, element]) => {
+          element.classList.toggle("hidden", key !== tabName);
+        });
+      }
+
+      async function loadWordCloud(documentId) {
+        const data = await api(`/documents/${documentId}/word-cloud`);
+        renderWordCloud(data.words || []);
+      }
+
+      function renderWordCloud(words) {
+        cloud.innerHTML = "";
+        if (!words.length) {
+          cloud.innerHTML = '<div class="empty" style="margin: 18px">这个资料还没有可生成词云的文字</div>';
+          return;
+        }
+        const palette = ["#1478ff", "#16a36f", "#d97706", "#7c3aed", "#e5484d", "#0f766e"];
+        const points = [
+          [50, 50], [32, 38], [68, 37], [29, 63], [70, 63], [50, 28],
+          [48, 72], [20, 48], [81, 49], [37, 24], [63, 78], [22, 74],
+          [78, 25], [15, 30], [86, 70], [44, 16], [58, 17], [13, 58],
+          [88, 38], [36, 82], [67, 84], [26, 19], [73, 18], [50, 88],
+        ];
+        const maxWeight = Math.max(...words.map(word => word.weight || 1), 1);
+        words.slice(0, points.length).forEach((word, index) => {
+          const element = document.createElement("span");
+          const weight = word.weight || 1;
+          const size = 15 + Math.round((weight / maxWeight) * 24);
+          const [x, y] = points[index];
+          element.className = "word";
+          element.textContent = word.text;
+          element.style.left = `${x}%`;
+          element.style.top = `${y}%`;
+          element.style.fontSize = `${size}px`;
+          element.style.color = palette[index % palette.length];
+          cloud.appendChild(element);
+        });
+      }
+
+      function renderChunks(items, targetChunkId = null) {
+        chunks.innerHTML = "";
+        if (!items.length) {
+          chunks.innerHTML = '<div class="empty">这个资料还没有解析出片段</div>';
+          return;
+        }
+        for (const item of items) {
+          const row = document.createElement("div");
+          row.className = String(item.chunk_id) === String(targetChunkId) ? "chunk-card hit" : "chunk-card";
+          row.dataset.chunkId = item.chunk_id;
+          row.innerHTML = `
+            <h3>${escapeHtml(item.location_label)}</h3>
+            <div class="snippet">${escapeHtml(item.text)}</div>
+          `;
+          chunks.appendChild(row);
+        }
+      }
+
+      function searchDocument() {
+        const query = docQueryInput.value.trim().toLowerCase();
+        if (!query) return renderChunks(activeChunks);
+        const filtered = activeChunks.filter(item => String(item.text || "").toLowerCase().includes(query));
+        renderChunks(filtered);
+      }
+
+      createSpaceBtn.addEventListener("click", () => createSpace().catch(error => setToast(homeToast, error.message, true)));
+      backHomeBtn.addEventListener("click", async () => {
+        await loadSpaces();
+        showScreen("home");
+      });
+      refreshBtn.addEventListener("click", () => openSpace(activeSpaceId).catch(error => setToast(spaceToast, error.message, true)));
+      createFolderBtn.addEventListener("click", () => createFolder().catch(error => setToast(spaceToast, error.message, true)));
+      uploadBtn.addEventListener("click", uploadFile);
+      spaceSearchBtn.addEventListener("click", () => searchSpace().catch(error => setToast(spaceToast, error.message, true)));
+      backSpaceBtn.addEventListener("click", () => showScreen("space"));
+      docSearchBtn.addEventListener("click", searchDocument);
+      segments.forEach(button => button.addEventListener("click", () => setDocumentTab(button.dataset.tab)));
+
+      loadSpaces().catch(error => {
+        apiText.textContent = "连接失败";
+        setToast(homeToast, error.message, true);
+      });
+    </script>
+  </body>
+</html>
