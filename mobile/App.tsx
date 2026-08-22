@@ -14,10 +14,10 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-const API_BASE = 'http://192.168.1.222:8000';
-const APP_VERSION = 'preview-search-cloud-v6';
+const API_BASE = Platform.OS === 'web' ? 'http://127.0.0.1:8000' : 'http://192.168.1.222:8000';
+const APP_VERSION = 'same-page-search-v8';
 
 type Space = {
   id: number;
@@ -27,8 +27,17 @@ type Space = {
   chunk_count: number;
 };
 
+type Folder = {
+  id: number;
+  space_id: number;
+  name: string;
+  document_count: number;
+  created_at: string;
+};
+
 type DocumentItem = {
   id: number;
+  folder_id: number | null;
   filename: string;
   file_type: string;
   chunk_count: number;
@@ -48,6 +57,7 @@ type DocumentPreview = DocumentItem & {
 type SearchResult = {
   chunk_id: number;
   filename: string;
+  folder_name?: string;
   location_label: string;
   snippet: string;
   text: string;
@@ -92,21 +102,27 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { message: str
 
 export default function App() {
   return (
-    <AppErrorBoundary>
-      <KnowledgeSpaceApp />
-    </AppErrorBoundary>
+    <SafeAreaProvider>
+      <AppErrorBoundary>
+        <KnowledgeSpaceApp />
+      </AppErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
 function KnowledgeSpaceApp() {
   const [view, setView] = useState<ViewMode>('home');
   const [spaces, setSpaces] = useState<Space[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   const [activeSpace, setActiveSpace] = useState<Space>(emptySpace);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [preview, setPreview] = useState<DocumentPreview | null>(null);
   const [cloudWords, setCloudWords] = useState<CloudWord[]>([]);
   const [spaceName, setSpaceName] = useState('');
+  const [folderName, setFolderName] = useState('');
   const [query, setQuery] = useState('');
+  const [expandedTerms, setExpandedTerms] = useState<string[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [expandedResultId, setExpandedResultId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -120,6 +136,11 @@ function KnowledgeSpaceApp() {
     ],
     [activeSpace, results.length],
   );
+
+  const activeFolder = folders.find(folder => folder.id === activeFolderId) || null;
+  const shownDocuments = activeFolderId
+    ? documents.filter(document => document.folder_id === activeFolderId)
+    : documents;
 
   useEffect(() => {
     loadSpaces();
@@ -136,13 +157,45 @@ function KnowledgeSpaceApp() {
       const nextActive = data.find(space => space.id === preferredSpaceId) || data[0] || emptySpace;
       setActiveSpace(nextActive);
       if (nextActive.id) {
-        await Promise.all([loadDocuments(nextActive.id), loadWordCloud(nextActive.id)]);
+        await loadSpaceData(nextActive.id);
+      } else {
+        clearSpaceData();
       }
     } catch {
       setApiOnline(false);
+      clearSpaceData();
       setSpaces([]);
-      setDocuments([]);
-      setCloudWords([]);
+    }
+  }
+
+  async function loadSpaceData(spaceId: number, preferredFolderId: number | null = activeFolderId) {
+    const [nextFolders] = await Promise.all([loadFolders(spaceId), loadDocuments(spaceId), loadWordCloud(spaceId)]);
+    if (preferredFolderId && nextFolders.some(folder => folder.id === preferredFolderId)) {
+      setActiveFolderId(preferredFolderId);
+    } else {
+      setActiveFolderId(null);
+    }
+  }
+
+  function clearSpaceData() {
+    setFolders([]);
+    setActiveFolderId(null);
+    setDocuments([]);
+    setCloudWords([]);
+    setResults([]);
+    setExpandedTerms([]);
+  }
+
+  async function loadFolders(spaceId: number) {
+    try {
+      const response = await fetch(`${API_BASE}/spaces/${spaceId}/folders`);
+      if (!response.ok) throw new Error('Failed to load folders');
+      const data: Folder[] = await response.json();
+      setFolders(data);
+      return data;
+    } catch {
+      setFolders([]);
+      return [];
     }
   }
 
@@ -190,12 +243,59 @@ function KnowledgeSpaceApp() {
     }
   }
 
+  async function createFolder() {
+    const name = folderName.trim();
+    if (!name || !activeSpace.id) return;
+
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/spaces/${activeSpace.id}/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!response.ok) throw new Error('Create folder failed');
+      const created: Folder = await response.json();
+      setFolderName('');
+      await loadSpaceData(activeSpace.id, created.id);
+    } catch {
+      Alert.alert('创建文件夹失败', '请确认电脑端服务正在运行。');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteFolder(folder: Folder) {
+    Alert.alert('删除文件夹', `确定删除“${folder.name}”吗？里面的文件也会一起删除。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          setLoading(true);
+          try {
+            const response = await fetch(`${API_BASE}/folders/${folder.id}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error('Delete folder failed');
+            setPreview(null);
+            setResults([]);
+            await loadSpaces(activeSpace.id);
+          } catch {
+            Alert.alert('删除失败', '文件夹没有删除成功，请确认电脑端服务正在运行。');
+          } finally {
+            setLoading(false);
+          }
+        },
+      },
+    ]);
+  }
+
   async function openSpace(space: Space) {
     setActiveSpace(space);
     setPreview(null);
     setResults([]);
+    setExpandedTerms([]);
     setView('space');
-    await Promise.all([loadDocuments(space.id), loadWordCloud(space.id)]);
+    await loadSpaceData(space.id, null);
   }
 
   async function openDocument(documentId: number) {
@@ -205,10 +305,33 @@ function KnowledgeSpaceApp() {
       if (!response.ok) throw new Error('Preview failed');
       setPreview(await response.json());
     } catch {
-      Alert.alert('预览失败', '文档已经上传，但暂时无法读取预览文本。');
+      Alert.alert('预览失败', '文件已经上传，但暂时无法读取预览文本。');
     } finally {
       setLoading(false);
     }
+  }
+
+  async function deleteDocument(documentId: number) {
+    Alert.alert('删除文件', '确定删除这个文件和它的搜索片段吗？', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          setLoading(true);
+          try {
+            const response = await fetch(`${API_BASE}/documents/${documentId}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error('Delete document failed');
+            setPreview(null);
+            await loadSpaces(activeSpace.id);
+          } catch {
+            Alert.alert('删除失败', '文件没有删除成功。');
+          } finally {
+            setLoading(false);
+          }
+        },
+      },
+    ]);
   }
 
   async function openOriginalFile(documentId: number) {
@@ -235,6 +358,7 @@ function KnowledgeSpaceApp() {
       });
       if (!response.ok) throw new Error('Search failed');
       const data = await response.json();
+      setExpandedTerms(data.expanded_terms || []);
       setResults(data.results || []);
     } catch {
       Alert.alert('搜索失败', '没有连上电脑端服务，或文档还没有解析完成。');
@@ -277,6 +401,7 @@ function KnowledgeSpaceApp() {
 
   async function uploadWithFallback(asset: DocumentPicker.DocumentPickerAsset) {
     const readableUri = await prepareReadableUri(asset);
+    const folderId = activeFolderId || folders[0]?.id || null;
     try {
       const contentBase64 = await FileSystem.readAsStringAsync(readableUri, {
         encoding: FileSystem.EncodingType.Base64,
@@ -287,13 +412,17 @@ function KnowledgeSpaceApp() {
         body: JSON.stringify({
           filename: asset.name,
           content_base64: contentBase64,
+          folder_id: folderId,
         }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || 'Base64 upload failed');
       return body;
     } catch (base64Error) {
-      const response = await FileSystem.uploadAsync(`${API_BASE}/spaces/${activeSpace.id}/files`, readableUri, {
+      const uploadUrl = folderId
+        ? `${API_BASE}/spaces/${activeSpace.id}/files?folder_id=${folderId}`
+        : `${API_BASE}/spaces/${activeSpace.id}/files`;
+      const response = await FileSystem.uploadAsync(uploadUrl, readableUri, {
         fieldName: 'file',
         httpMethod: 'POST',
         mimeType: asset.mimeType || inferMimeType(asset.name),
@@ -326,13 +455,13 @@ function KnowledgeSpaceApp() {
         <View style={styles.header}>
           <Text style={styles.kicker}>MindSpace</Text>
           <Text style={styles.title}>把资料变成可搜索的知识空间</Text>
-          <Text style={styles.subtitle}>上传 PDF、Word 或笔记，直接检索知识点、查看原文片段和资料词云。</Text>
+          <Text style={styles.subtitle}>上传 PDF、Word 或笔记，按知识点检索原文片段，并支持近义词搜索。</Text>
         </View>
 
         <View style={styles.createBox}>
           <TextInput
             style={styles.input}
-            placeholder="新建空间，比如 高数"
+            placeholder="新建空间，比如：高数"
             placeholderTextColor="#9aa3af"
             value={spaceName}
             onChangeText={setSpaceName}
@@ -387,6 +516,44 @@ function KnowledgeSpaceApp() {
           </View>
         </View>
 
+        <Text style={styles.sectionTitle}>文件夹</Text>
+        <View style={styles.folderTools}>
+          <TextInput
+            style={styles.folderInput}
+            placeholder="新建文件夹"
+            placeholderTextColor="#9aa3af"
+            value={folderName}
+            onChangeText={setFolderName}
+            onSubmitEditing={createFolder}
+          />
+          <Pressable style={styles.addFolderButton} onPress={createFolder}>
+            <Text style={styles.addFolderText}>添加</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.folderList}>
+          <Pressable
+            style={[styles.folderChip, activeFolderId === null && styles.folderChipActive]}
+            onPress={() => setActiveFolderId(null)}
+          >
+            <Text style={[styles.folderChipText, activeFolderId === null && styles.folderChipTextActive]}>
+              全部 {documents.length}
+            </Text>
+          </Pressable>
+          {folders.map(folder => (
+            <View key={folder.id} style={[styles.folderChip, activeFolderId === folder.id && styles.folderChipActive]}>
+              <Pressable style={styles.folderMain} onPress={() => setActiveFolderId(folder.id)}>
+                <Text style={[styles.folderChipText, activeFolderId === folder.id && styles.folderChipTextActive]}>
+                  {folder.name} {folder.document_count}
+                </Text>
+              </Pressable>
+              <Pressable style={styles.folderDeleteButton} onPress={() => deleteFolder(folder)}>
+                <Text style={styles.folderDeleteText}>删</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+
         <View style={styles.searchBox}>
           <TextInput
             style={styles.searchInput}
@@ -400,10 +567,13 @@ function KnowledgeSpaceApp() {
             <Text style={styles.searchButtonText}>搜索</Text>
           </Pressable>
         </View>
+        {expandedTerms.length > 1 && (
+          <Text style={styles.synonymText}>已扩展：{expandedTerms.slice(0, 8).join('、')}</Text>
+        )}
 
         <View style={styles.actionRow}>
           <Pressable style={styles.secondaryButton} onPress={() => setView('upload')}>
-            <Text style={styles.secondaryButtonText}>上传资料</Text>
+            <Text style={styles.secondaryButtonText}>上传到{activeFolder ? `「${activeFolder.name}」` : '文件夹'}</Text>
           </Pressable>
           <Pressable style={styles.secondaryButton} onPress={() => loadWordCloud(activeSpace.id)}>
             <Text style={styles.secondaryButtonText}>刷新词云</Text>
@@ -436,23 +606,28 @@ function KnowledgeSpaceApp() {
           </View>
         )}
 
-        <Text style={styles.sectionTitle}>已上传资料</Text>
-        {documents.length === 0 ? (
+        <Text style={styles.sectionTitle}>{activeFolder ? `${activeFolder.name}里的资料` : '已上传资料'}</Text>
+        {shownDocuments.length === 0 ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>还没有资料</Text>
             <Text style={styles.emptyText}>上传成功后，文件会显示在这里。</Text>
           </View>
         ) : (
-          documents.map(document => (
-            <Pressable key={document.id} style={styles.documentRow} onPress={() => openDocument(document.id)}>
-              <View style={styles.fileBadge}>
-                <Text style={styles.fileBadgeText}>{document.file_type.toUpperCase()}</Text>
-              </View>
-              <View style={styles.documentBody}>
-                <Text style={styles.documentName}>{document.filename}</Text>
-                <Text style={styles.documentMeta}>{document.chunk_count} 个片段，点击预览</Text>
-              </View>
-            </Pressable>
+          shownDocuments.map(document => (
+            <View key={document.id} style={styles.documentRow}>
+              <Pressable style={styles.documentOpenArea} onPress={() => openDocument(document.id)}>
+                <View style={styles.fileBadge}>
+                  <Text style={styles.fileBadgeText}>{document.file_type.toUpperCase()}</Text>
+                </View>
+                <View style={styles.documentBody}>
+                  <Text style={styles.documentName}>{document.filename}</Text>
+                  <Text style={styles.documentMeta}>{document.chunk_count} 个片段，点击预览</Text>
+                </View>
+              </Pressable>
+              <Pressable style={styles.deleteFileButton} onPress={() => deleteDocument(document.id)}>
+                <Text style={styles.deleteFileText}>删</Text>
+              </Pressable>
+            </View>
           ))
         )}
 
@@ -482,7 +657,7 @@ function KnowledgeSpaceApp() {
         {results.length === 0 && !loading ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>还没有结果</Text>
-            <Text style={styles.emptyText}>上传资料后，试试搜索文档里的原词，比如章节标题或公式名称。</Text>
+            <Text style={styles.emptyText}>上传资料后，试试搜索原词或近义词，比如“检索”和“查找”。</Text>
           </View>
         ) : (
           results.map(result => {
@@ -495,7 +670,7 @@ function KnowledgeSpaceApp() {
               >
                 <View style={styles.resultHeader}>
                   <Text style={styles.resultFile}>{result.filename}</Text>
-                  <Text style={styles.resultLocation}>{result.location_label}</Text>
+                  <Text style={styles.resultLocation}>{formatResultLocation(result)}</Text>
                 </View>
                 <Text style={styles.resultText}>{stripMarkers(result.snippet || result.text)}</Text>
                 {expanded && <Text style={styles.fullText}>{result.text}</Text>}
@@ -517,7 +692,9 @@ function KnowledgeSpaceApp() {
         <View style={styles.uploadPanel}>
           <Text style={styles.uploadIcon}>+</Text>
           <Text style={styles.uploadTitle}>导入资料</Text>
-          <Text style={styles.uploadText}>支持 PDF、Word、TXT、MD。上传后会自动解析成片段，并加入搜索和词云。</Text>
+          <Text style={styles.uploadText}>
+            支持 PDF、Word、TXT、MD。当前会上传到{activeFolder ? `「${activeFolder.name}」` : '默认文件夹'}。
+          </Text>
           <Pressable style={styles.primaryButtonWide} onPress={pickAndUploadFile}>
             <Text style={styles.primaryButtonText}>选择文件</Text>
           </Pressable>
@@ -546,6 +723,10 @@ function KnowledgeSpaceApp() {
 
 function stripMarkers(text: string) {
   return text.replace(/\[/g, '').replace(/\]/g, '');
+}
+
+function formatResultLocation(result: SearchResult) {
+  return [result.folder_name, result.location_label].filter(Boolean).join(' · ');
 }
 
 function inferMimeType(fileName: string) {
@@ -605,7 +786,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.88)',
+    backgroundColor: 'rgba(255,255,255,0.9)',
   },
   statusDot: {
     width: 7,
@@ -782,6 +963,81 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 4,
   },
+  folderTools: {
+    flexDirection: 'row',
+    gap: 10,
+    padding: 8,
+    borderRadius: 22,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#edf2f7',
+  },
+  folderInput: {
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    color: '#111827',
+    fontSize: 14,
+  },
+  addFolderButton: {
+    minWidth: 66,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 16,
+    backgroundColor: '#111827',
+  },
+  addFolderText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  folderList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  folderChip: {
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#dbe7f3',
+    backgroundColor: '#ffffff',
+    overflow: 'hidden',
+  },
+  folderChipActive: {
+    borderColor: '#2563eb',
+    backgroundColor: '#eef6ff',
+  },
+  folderMain: {
+    minHeight: 38,
+    justifyContent: 'center',
+    paddingLeft: 12,
+    paddingRight: 8,
+  },
+  folderChipText: {
+    color: '#475569',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  folderChipTextActive: {
+    color: '#2563eb',
+  },
+  folderDeleteButton: {
+    minWidth: 36,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff1f2',
+  },
+  folderDeleteText: {
+    color: '#e11d48',
+    fontSize: 12,
+    fontWeight: '900',
+  },
   searchBox: {
     flexDirection: 'row',
     gap: 10,
@@ -812,6 +1068,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
   },
+  synonymText: {
+    marginTop: 8,
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 18,
+  },
   actionRow: {
     flexDirection: 'row',
     gap: 10,
@@ -824,11 +1086,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 18,
     backgroundColor: '#eef2ff',
+    paddingHorizontal: 8,
   },
   secondaryButtonText: {
     color: '#2563eb',
     fontSize: 14,
     fontWeight: '800',
+    textAlign: 'center',
   },
   cloudBox: {
     flexDirection: 'row',
@@ -871,13 +1135,19 @@ const styles = StyleSheet.create({
   documentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    padding: 14,
+    gap: 8,
+    padding: 12,
     borderRadius: 20,
     backgroundColor: '#ffffff',
     borderWidth: 1,
     borderColor: '#edf2f7',
     marginBottom: 10,
+  },
+  documentOpenArea: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   fileBadge: {
     width: 56,
@@ -905,6 +1175,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     marginTop: 4,
+  },
+  deleteFileButton: {
+    minWidth: 42,
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 15,
+    backgroundColor: '#fff1f2',
+  },
+  deleteFileText: {
+    color: '#e11d48',
+    fontSize: 12,
+    fontWeight: '900',
   },
   previewPanel: {
     marginTop: 16,

@@ -24,6 +24,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SYNONYM_GROUPS = [
+    {"知识", "资料", "文档", "文件", "笔记", "材料", "内容"},
+    {"搜索", "检索", "查找", "查询", "寻找"},
+    {"学习", "复习", "预习", "自学", "备考"},
+    {"题目", "习题", "例题", "练习", "试题", "考题"},
+    {"公式", "定理", "法则", "性质", "结论"},
+    {"定义", "概念", "含义", "解释"},
+    {"总结", "归纳", "概要", "提炼", "梳理"},
+    {"重点", "要点", "核心", "关键", "考点"},
+    {"证明", "推导", "论证", "演算"},
+    {"函数", "映射", "function"},
+    {"极限", "lim", "limit"},
+    {"导数", "微分", "derivative"},
+    {"积分", "定积分", "不定积分", "integral"},
+    {"矩阵", "matrix"},
+    {"向量", "vector"},
+    {"概率", "随机", "probability"},
+    {"高数", "高等数学", "微积分", "calculus"},
+]
+
 
 class SpaceCreate(BaseModel):
     name: str
@@ -181,10 +201,39 @@ def create_folder(space_id: int, payload: FolderCreate) -> dict:
         return dict(row)
 
 
+@app.delete("/folders/{folder_id}")
+def delete_folder(folder_id: int) -> dict:
+    with connect() as conn:
+        folder = conn.execute("SELECT id, space_id FROM folders WHERE id = ?", (folder_id,)).fetchone()
+        if not folder:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        rows = conn.execute(
+            "SELECT stored_path FROM documents WHERE folder_id = ?",
+            (folder_id,),
+        ).fetchall()
+        conn.execute(
+            """
+            DELETE FROM chunks
+            WHERE document_id IN (
+                SELECT id FROM documents WHERE folder_id = ?
+            )
+            """,
+            (folder_id,),
+        )
+        conn.execute("DELETE FROM documents WHERE folder_id = ?", (folder_id,))
+        conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+
+    for row in rows:
+        delete_upload_path(row["stored_path"])
+    delete_upload_path(UPLOAD_DIR / str(folder["space_id"]) / str(folder_id), directory=True)
+    return {"status": "deleted", "space_id": folder["space_id"]}
+
+
 @app.post("/spaces/{space_id}/files")
 def upload_file(
     space_id: int,
     folder_id: int | None = Form(None),
+    query_folder_id: int | None = Query(None, alias="folder_id"),
     file: UploadFile = File(...),
 ) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
@@ -192,7 +241,7 @@ def upload_file(
         raise HTTPException(status_code=400, detail="Only PDF, DOCX, TXT, and MD are supported")
 
     with connect() as conn:
-        folder_id = resolve_folder_id(conn, space_id, folder_id)
+        folder_id = resolve_folder_id(conn, space_id, folder_id if folder_id is not None else query_folder_id)
 
     stored_path = save_upload_file(space_id, folder_id, suffix, file)
     try:
@@ -440,43 +489,53 @@ def get_document_file(document_id: int) -> FileResponse:
 def search(space_id: int, payload: SearchRequest) -> dict:
     query = payload.query.strip()
     if not query:
-        return {"query": query, "results": []}
+        return {"query": query, "expanded_terms": [], "search_mode": "empty", "results": []}
 
     limit = max(1, min(payload.limit, 50))
-    fts_query = " OR ".join(part for part in query.split() if part)
+    expanded_terms = expand_search_terms(query) or [query]
+    required_terms = extract_required_terms(query)
+    fts_query = " OR ".join(escape_fts_term(term) for term in expanded_terms if term)
     results: list[dict] = []
     seen_chunk_ids: set[int] = set()
     with connect() as conn:
-        try:
-            rows = conn.execute(
-                """
-                SELECT c.id AS chunk_id,
-                       c.document_id,
-                       c.location_label,
-                       snippet(chunks_fts, 0, '[', ']', '...', 18) AS snippet,
-                       c.text,
-                       d.filename,
-                       d.folder_id,
-                       f.name AS folder_name
-                FROM chunks_fts
-                JOIN chunks c ON c.id = chunks_fts.rowid
-                JOIN documents d ON d.id = c.document_id
-                LEFT JOIN folders f ON f.id = d.folder_id
-                WHERE c.space_id = ?
-                  AND chunks_fts MATCH ?
-                ORDER BY bm25(chunks_fts)
-                LIMIT ?
-                """,
-                (space_id, fts_query, limit),
-            ).fetchall()
-            for row in rows:
-                item = dict(row)
-                seen_chunk_ids.add(item["chunk_id"])
-                results.append(item)
-        except Exception:
-            pass
+        ensure_space(conn, space_id)
+        for item in find_same_page_matches(conn, space_id, required_terms, query, min(limit, 12)):
+            seen_chunk_ids.add(item["chunk_id"])
+            results.append(item)
 
-        like_terms = [query, *query.split()]
+        if fts_query:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT c.id AS chunk_id,
+                           c.document_id,
+                           c.location_label,
+                           snippet(chunks_fts, 0, '[', ']', '...', 18) AS snippet,
+                           c.text,
+                           d.filename,
+                           d.folder_id,
+                           f.name AS folder_name
+                    FROM chunks_fts
+                    JOIN chunks c ON c.id = chunks_fts.rowid
+                    JOIN documents d ON d.id = c.document_id
+                    LEFT JOIN folders f ON f.id = d.folder_id
+                    WHERE c.space_id = ?
+                      AND chunks_fts MATCH ?
+                    ORDER BY bm25(chunks_fts)
+                    LIMIT ?
+                    """,
+                    (space_id, fts_query, limit),
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    if item["chunk_id"] in seen_chunk_ids:
+                        continue
+                    seen_chunk_ids.add(item["chunk_id"])
+                    results.append(item)
+            except Exception:
+                pass
+
+        like_terms = expanded_terms
         where_parts = ["c.text LIKE ?" for _ in like_terms]
         params = [f"%{term}%" for term in like_terms]
         rows = conn.execute(
@@ -502,7 +561,7 @@ def search(space_id: int, payload: SearchRequest) -> dict:
             item = dict(row)
             if item["chunk_id"] in seen_chunk_ids:
                 continue
-            item["snippet"] = make_snippet(item["text"], query)
+            item["snippet"] = make_snippet(item["text"], query, expanded_terms)
             results.append(item)
             seen_chunk_ids.add(item["chunk_id"])
             if len(results) >= limit:
@@ -511,7 +570,14 @@ def search(space_id: int, payload: SearchRequest) -> dict:
         for item in results:
             item["context_text"] = build_chunk_context(conn, item["document_id"], item["chunk_id"])
 
-    return {"query": query, "results": results[:limit]}
+    search_mode = "same_page" if len(required_terms) >= 2 else "local"
+    return {
+        "query": query,
+        "expanded_terms": expanded_terms,
+        "required_terms": required_terms,
+        "search_mode": search_mode,
+        "results": results[:limit],
+    }
 
 
 @app.get("/spaces/{space_id}/word-cloud")
@@ -657,15 +723,178 @@ def html_escape(value: object) -> str:
     )
 
 
-def make_snippet(text: str, query: str, radius: int = 70) -> str:
-    index = text.lower().find(query.lower())
+def extract_required_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    for match in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}|[\u4e00-\u9fff]{2,}", query):
+        add_unique_term(terms, match)
+    if not terms:
+        for part in query.split():
+            add_unique_term(terms, part)
+    return terms[:8]
+
+
+def find_same_page_matches(
+    conn,
+    space_id: int,
+    required_terms: list[str],
+    query: str,
+    limit: int,
+) -> list[dict]:
+    if len(required_terms) < 2:
+        return []
+
+    where_parts = ["c.text LIKE ?" for _ in required_terms]
+    rows = conn.execute(
+        f"""
+        SELECT c.id AS chunk_id,
+               c.document_id,
+               c.location_label,
+               c.text,
+               d.filename,
+               d.folder_id,
+               f.name AS folder_name
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        LEFT JOIN folders f ON f.id = d.folder_id
+        WHERE c.space_id = ?
+          AND d.file_type = 'pdf'
+          AND ({' OR '.join(where_parts)})
+        ORDER BY d.id, c.id
+        LIMIT 1200
+        """,
+        (space_id, *[f"%{term}%" for term in required_terms]),
+    ).fetchall()
+
+    required_norms = {normalize_term(term) for term in required_terms}
+    pages: dict[tuple[int, int], dict] = {}
+    for row in rows:
+        page_number = parse_page_number(row["location_label"])
+        if page_number is None:
+            continue
+        key = (row["document_id"], page_number)
+        page = pages.setdefault(
+            key,
+            {
+                "document_id": row["document_id"],
+                "page_number": page_number,
+                "matched_terms": set(),
+                "first_chunk_id": row["chunk_id"],
+            },
+        )
+        page["first_chunk_id"] = min(page["first_chunk_id"], row["chunk_id"])
+        lower_text = row["text"].lower()
+        for term in required_terms:
+            if term.lower() in lower_text:
+                page["matched_terms"].add(normalize_term(term))
+
+    matched_pages = [
+        page
+        for page in pages.values()
+        if required_norms.issubset(page["matched_terms"])
+    ]
+    matched_pages.sort(key=lambda item: (item["document_id"], item["page_number"], item["first_chunk_id"]))
+
+    results: list[dict] = []
+    for page in matched_pages[:limit]:
+        page_rows = conn.execute(
+            """
+            SELECT c.id AS chunk_id,
+                   c.document_id,
+                   c.location_label,
+                   c.text,
+                   d.filename,
+                   d.folder_id,
+                   f.name AS folder_name
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            LEFT JOIN folders f ON f.id = d.folder_id
+            WHERE c.document_id = ?
+              AND (c.location_label = ? OR c.location_label LIKE ?)
+            ORDER BY c.id
+            """,
+            (
+                page["document_id"],
+                f"Page {page['page_number']}",
+                f"Page {page['page_number']},%",
+            ),
+        ).fetchall()
+        if not page_rows:
+            continue
+        first = dict(page_rows[0])
+        page_text = "\n".join(row["text"] for row in page_rows if row["text"].strip())
+        first["location_label"] = f"Page {page['page_number']} · 同页命中"
+        first["snippet"] = make_snippet(page_text, query, required_terms, radius=130)
+        first["text"] = page_text[:2500]
+        first["same_page_match"] = True
+        results.append(first)
+    return results
+
+
+def parse_page_number(label: str) -> int | None:
+    match = re.search(r"\bPage\s+(\d+)\b", label or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def normalize_term(term: str) -> str:
+    return term.strip().lower()
+
+
+def expand_search_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    candidates = [query, *query.split()]
+    candidates.extend(re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}|[\u4e00-\u9fff]{2,}", query))
+
+    try:
+        import jieba
+
+        candidates.extend(word.strip() for word in jieba.cut(query))
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        add_unique_term(terms, candidate)
+
+    normalized = {term.lower() for term in terms}
+    for group in SYNONYM_GROUPS:
+        if any(term.lower() in normalized or term in query for term in group):
+            for synonym in group:
+                add_unique_term(terms, synonym)
+
+    return terms[:24]
+
+
+def add_unique_term(terms: list[str], term: str) -> None:
+    clean = term.strip().strip('"').strip("'")
+    if len(clean) < 2:
+        return
+    if clean not in terms:
+        terms.append(clean)
+
+
+def escape_fts_term(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
+def make_snippet(text: str, query: str, terms: list[str] | None = None, radius: int = 70) -> str:
+    search_terms = [query, *(terms or [])]
+    match_index = -1
+    match_text = query
+    lower_text = text.lower()
+    for term in search_terms:
+        index = lower_text.find(term.lower())
+        if index >= 0 and (match_index < 0 or index < match_index):
+            match_index = index
+            match_text = term
+    index = match_index
     if index < 0:
         return text[: radius * 2]
     start = max(0, index - radius)
-    end = min(len(text), index + len(query) + radius)
+    end = min(len(text), index + len(match_text) + radius)
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(text) else ""
-    return f"{prefix}{text[start:index]}[{text[index:index + len(query)]}]{text[index + len(query):end]}{suffix}"
+    return f"{prefix}{text[start:index]}[{text[index:index + len(match_text)]}]{text[index + len(match_text):end]}{suffix}"
 
 
 def build_chunk_context(conn, document_id: int, chunk_id: int) -> str:
