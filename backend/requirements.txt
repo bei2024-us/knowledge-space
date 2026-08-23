@@ -5,3 +5,7 @@ pymupdf==1.26.7
 python-docx==1.2.0
 jieba==0.42.1
 ocrmypdf==17.10.0
+faster-whisper>=1.0.0
+numpy>=1.26.0
+# 可选：本地语义搜索，安装后自动启用（体积较大，首次运行会下载模型权重）
+# FlagEmbedding>=1.2.0

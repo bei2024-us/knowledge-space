@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from .embeddings import backfill_space_embeddings, embedding_backend_name, load_space_embeddings, semantic_rank_chunks
 from .db import UPLOAD_DIR, connect, ensure_storage, init_db
-from .parsers import ingest_file
+from .parsers import MEDIA_SUFFIXES, ingest_file
 
 
 app = FastAPI(title="MindSpace API")
@@ -238,8 +238,14 @@ def upload_file(
     file: UploadFile = File(...),
 ) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".pdf", ".docx", ".txt", ".md"}:
-        raise HTTPException(status_code=400, detail="Only PDF, DOCX, TXT, and MD are supported")
+    if suffix not in {".pdf", ".docx", ".txt", ".md", *MEDIA_SUFFIXES}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only PDF, DOCX, TXT, MD, audio and video files are supported"
+                f" ({', '.join(sorted(MEDIA_SUFFIXES))})"
+            ),
+        )
 
     with connect() as conn:
         folder_id = resolve_folder_id(conn, space_id, folder_id if folder_id is not None else query_folder_id)
@@ -266,8 +272,14 @@ def upload_file(
 @app.post("/spaces/{space_id}/files/base64")
 def upload_file_base64(space_id: int, payload: Base64UploadRequest) -> dict:
     suffix = Path(payload.filename or "").suffix.lower()
-    if suffix not in {".pdf", ".docx", ".txt", ".md"}:
-        raise HTTPException(status_code=400, detail="Only PDF, DOCX, TXT, and MD are supported")
+    if suffix not in {".pdf", ".docx", ".txt", ".md", *MEDIA_SUFFIXES}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only PDF, DOCX, TXT, MD, audio and video files are supported"
+                f" ({', '.join(sorted(MEDIA_SUFFIXES))})"
+            ),
+        )
 
     with connect() as conn:
         folder_id = resolve_folder_id(conn, space_id, payload.folder_id)
