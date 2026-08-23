@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-const API_BASE = Platform.OS === 'web' ? 'http://127.0.0.1:8000' : 'http://192.168.1.222:8000';
+const API_BASE = 'http://192.168.3.6:8000';
 const APP_VERSION = 'same-page-search-v8';
 
 type Space = {
@@ -73,7 +73,7 @@ type ViewMode = 'home' | 'space' | 'upload';
 const emptySpace: Space = {
   id: 0,
   name: '知识空间',
-  description: '把 PDF、Word 和笔记放进来，按知识点检索原文片段。',
+  description: '把 PDF、Word、笔记或音频资料放进来，按知识点检索原文片段。',
   document_count: 0,
   chunk_count: 0,
 };
@@ -126,6 +126,7 @@ function KnowledgeSpaceApp() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [expandedResultId, setExpandedResultId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
   const [apiOnline, setApiOnline] = useState(false);
 
   const activeStats = useMemo(
@@ -374,34 +375,70 @@ function KnowledgeSpaceApp() {
     }
 
     const picked = await DocumentPicker.getDocumentAsync({
-      copyToCacheDirectory: true,
+      copyToCacheDirectory: Platform.OS !== 'web',
       multiple: false,
       type: [
         'application/pdf',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'text/plain',
         'text/markdown',
+        // 音频
+        'audio/*',
+        'audio/mpeg',
+        'audio/wav',
+        'audio/x-wav',
+        'audio/mp4',
+        'audio/x-m4a',
+        'audio/aac',
+        'audio/flac',
+        'audio/ogg',
+        'audio/opus',
+        'audio/webm',
+        // 视频
+        'video/*',
+        'video/mp4',
+        'video/quicktime',
+        'video/x-matroska',
+        'video/x-msvideo',
+        'video/webm',
+        'video/x-flv',
+        'video/x-ms-wmv',
+        'video/mpeg',
+        'video/3gpp',
       ],
     });
 
     if (picked.canceled || picked.assets.length === 0) return;
 
+    const asset = picked.assets[0];
+    const isMedia = /\.(mp3|wav|m4a|aac|flac|ogg|opus|mp4|mov|mkv|avi|webm|flv|wmv|mpg|mpeg|3gp)$/i.test(asset.name || '');
     setLoading(true);
+    setUploadStatus(isMedia ? '正在上传并转写音视频，首次加载模型需要 1-2 分钟，请耐心等待...' : '正在上传文件...');
     try {
-      const uploaded = await uploadWithFallback(picked.assets[0]);
+      const uploaded = await uploadWithFallback(asset);
+      setUploadStatus(`已解析 ${uploaded.chunk_count} 个片段。`);
       Alert.alert('上传完成', `已解析 ${uploaded.chunk_count} 个片段。`);
       await loadSpaces(activeSpace.id);
       setView('space');
     } catch (error) {
-      Alert.alert('上传失败', error instanceof Error ? error.message : '文件没有上传成功。');
+      const msg = error instanceof Error ? error.message : '文件没有上传成功。';
+      setUploadStatus(`上传失败：${msg}`);
+      Alert.alert('上传失败', msg);
     } finally {
       setLoading(false);
     }
   }
 
   async function uploadWithFallback(asset: DocumentPicker.DocumentPickerAsset) {
-    const readableUri = await prepareReadableUri(asset);
     const folderId = activeFolderId || folders[0]?.id || null;
+
+    // Web 平台：FileSystem API 不支持 blob URL，必须用浏览器原生 FormData + fetch
+    if (Platform.OS === 'web') {
+      return await uploadViaWebForm(asset, folderId);
+    }
+
+    // Native 平台：保持原 base64 → multipart 回退逻辑
+    const readableUri = await prepareReadableUri(asset);
     try {
       const contentBase64 = await FileSystem.readAsStringAsync(readableUri, {
         encoding: FileSystem.EncodingType.Base64,
@@ -437,6 +474,31 @@ function KnowledgeSpaceApp() {
     }
   }
 
+  async function uploadViaWebForm(asset: DocumentPicker.DocumentPickerAsset, folderId: number | null) {
+    // Web 下 expo-document-picker 可能直接给 File，也可能只给 blob URL；两种都支持
+    const anyAsset = asset as unknown as { file?: File };
+    let file: File | null = anyAsset.file ?? null;
+    if (!file) {
+      if (!asset.uri) throw new Error('无法读取选中的文件');
+      const resp = await fetch(asset.uri);
+      const blob = await resp.blob();
+      file = new File([blob], asset.name || 'upload', { type: asset.mimeType || inferMimeType(asset.name) });
+    }
+    const formData = new FormData();
+    formData.append('file', file, asset.name || 'upload');
+
+    const uploadUrl = folderId
+      ? `${API_BASE}/spaces/${activeSpace.id}/files?folder_id=${folderId}`
+      : `${API_BASE}/spaces/${activeSpace.id}/files`;
+
+    const response = await fetch(uploadUrl, { method: 'POST', body: formData });
+    const text = await response.text();
+    let body: any = {};
+    try { body = JSON.parse(text); } catch { body = { detail: text }; }
+    if (!response.ok) throw new Error(body.detail || `上传失败（HTTP ${response.status}）`);
+    return body;
+  }
+
   async function prepareReadableUri(asset: DocumentPicker.DocumentPickerAsset) {
     if (!FileSystem.cacheDirectory) return asset.uri;
     const safeName = asset.name.replace(/[^\w.-]/g, '_');
@@ -455,7 +517,7 @@ function KnowledgeSpaceApp() {
         <View style={styles.header}>
           <Text style={styles.kicker}>MindSpace</Text>
           <Text style={styles.title}>把资料变成可搜索的知识空间</Text>
-          <Text style={styles.subtitle}>上传 PDF、Word 或笔记，按知识点检索原文片段，并支持近义词搜索。</Text>
+          <Text style={styles.subtitle}>上传 PDF、Word、笔记、音频或视频，按知识点检索原文片段，并支持近义词搜索。</Text>
         </View>
 
         <View style={styles.createBox}>
@@ -693,11 +755,20 @@ function KnowledgeSpaceApp() {
           <Text style={styles.uploadIcon}>+</Text>
           <Text style={styles.uploadTitle}>导入资料</Text>
           <Text style={styles.uploadText}>
-            支持 PDF、Word、TXT、MD。当前会上传到{activeFolder ? `「${activeFolder.name}」` : '默认文件夹'}。
+            支持 PDF、Word、TXT、MD、音频（MP3/WAV/M4A 等）和视频（MP4/MOV/MKV 等）。音视频会自动转写为文字后入库。当前会上传到
+            {activeFolder ? `「${activeFolder.name}」` : '默认文件夹'}。
           </Text>
           <Pressable style={styles.primaryButtonWide} onPress={pickAndUploadFile}>
             <Text style={styles.primaryButtonText}>选择文件</Text>
           </Pressable>
+          {uploadStatus ? (
+            <Text style={{ marginTop: 12, color: '#2563eb', fontSize: 13, textAlign: 'center' }}>
+              {uploadStatus}
+            </Text>
+          ) : null}
+          {loading ? (
+            <ActivityIndicator color="#2563eb" style={{ marginTop: 8 }} />
+          ) : null}
         </View>
       </ScrollView>
     );
@@ -734,6 +805,24 @@ function inferMimeType(fileName: string) {
   if (lower.endsWith('.pdf')) return 'application/pdf';
   if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   if (lower.endsWith('.md')) return 'text/markdown';
+  // 音频
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  if (lower.endsWith('.aac')) return 'audio/aac';
+  if (lower.endsWith('.flac')) return 'audio/flac';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  if (lower.endsWith('.opus')) return 'audio/opus';
+  // 视频
+  if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.mov')) return 'video/quicktime';
+  if (lower.endsWith('.mkv')) return 'video/x-matroska';
+  if (lower.endsWith('.avi')) return 'video/x-msvideo';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  if (lower.endsWith('.flv')) return 'video/x-flv';
+  if (lower.endsWith('.wmv')) return 'video/x-ms-wmv';
+  if (lower.endsWith('.mpg') || lower.endsWith('.mpeg')) return 'video/mpeg';
+  if (lower.endsWith('.3gp')) return 'video/3gpp';
   return 'text/plain';
 }
 
