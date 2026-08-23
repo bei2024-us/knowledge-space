@@ -79,6 +79,15 @@ def init_db() -> None:
                 INSERT INTO chunks_fts(chunks_fts, rowid, text)
                 VALUES('delete', old.id, old.text);
             END;
+
+            CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                chunk_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chunk_id, model),
+                FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+            );
             """
         )
         _ensure_column(conn, "documents", "folder_id", "INTEGER")

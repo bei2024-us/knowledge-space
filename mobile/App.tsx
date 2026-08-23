@@ -7,6 +7,7 @@ import {
   Alert,
   Linking,
   Platform,
+  NativeModules,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,8 +17,41 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-const API_BASE = Platform.OS === 'web' ? 'http://127.0.0.1:8000' : 'http://192.168.1.222:8000';
+const API_PORT = 8000;
+const API_BASE = resolveApiBase();
 const APP_VERSION = 'same-page-search-v8';
+
+function resolveApiBase() {
+  const configured = getConfiguredApiBase();
+  if (configured) return configured;
+
+  if (Platform.OS === 'web') {
+    return `http://127.0.0.1:${API_PORT}`;
+  }
+
+  const host = getPackagerHost();
+  if (host) {
+    if ((host === 'localhost' || host === '127.0.0.1') && Platform.OS === 'android') {
+      return `http://10.0.2.2:${API_PORT}`;
+    }
+    return `http://${host}:${API_PORT}`;
+  }
+
+  return Platform.OS === 'android' ? `http://10.0.2.2:${API_PORT}` : `http://127.0.0.1:${API_PORT}`;
+}
+
+function getConfiguredApiBase() {
+  const value = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+  if (!value) return null;
+  return value.replace(/\/+$/, '');
+}
+
+function getPackagerHost() {
+  const scriptURL = (NativeModules as { SourceCode?: { scriptURL?: string } }).SourceCode?.scriptURL;
+  if (!scriptURL) return null;
+  const match = String(scriptURL).match(/^(?:https?|exp):\/\/([^:/?#]+)/i);
+  return match?.[1] || null;
+}
 
 type Space = {
   id: number;
@@ -403,6 +437,21 @@ function KnowledgeSpaceApp() {
     const readableUri = await prepareReadableUri(asset);
     const folderId = activeFolderId || folders[0]?.id || null;
     try {
+      const uploadUrl = folderId
+        ? `${API_BASE}/spaces/${activeSpace.id}/files?folder_id=${folderId}`
+        : `${API_BASE}/spaces/${activeSpace.id}/files`;
+      const response = await FileSystem.uploadAsync(uploadUrl, readableUri, {
+        fieldName: 'file',
+        httpMethod: 'POST',
+        mimeType: asset.mimeType || inferMimeType(asset.name),
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      });
+      const body = JSON.parse(response.body);
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(body.detail || 'Native upload failed');
+      }
+      return body;
+    } catch (nativeError) {
       const contentBase64 = await FileSystem.readAsStringAsync(readableUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -416,22 +465,8 @@ function KnowledgeSpaceApp() {
         }),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || 'Base64 upload failed');
-      return body;
-    } catch (base64Error) {
-      const uploadUrl = folderId
-        ? `${API_BASE}/spaces/${activeSpace.id}/files?folder_id=${folderId}`
-        : `${API_BASE}/spaces/${activeSpace.id}/files`;
-      const response = await FileSystem.uploadAsync(uploadUrl, readableUri, {
-        fieldName: 'file',
-        httpMethod: 'POST',
-        mimeType: asset.mimeType || inferMimeType(asset.name),
-        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      });
-      const body = JSON.parse(response.body);
-      if (response.status < 200 || response.status >= 300) {
-        const message = body.detail || (base64Error instanceof Error ? base64Error.message : 'Native upload failed');
-        throw new Error(message);
+      if (!response.ok) {
+        throw new Error(body.detail || (nativeError instanceof Error ? nativeError.message : 'Base64 upload failed'));
       }
       return body;
     }

@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
+from .embeddings import backfill_space_embeddings, embedding_backend_name, load_space_embeddings, semantic_rank_chunks
 from .db import UPLOAD_DIR, connect, ensure_storage, init_db
 from .parsers import ingest_file
 
@@ -497,11 +498,27 @@ def search(space_id: int, payload: SearchRequest) -> dict:
     fts_query = " OR ".join(escape_fts_term(term) for term in expanded_terms if term)
     results: list[dict] = []
     seen_chunk_ids: set[int] = set()
+    has_embedding_backend = embedding_backend_name() is not None
     with connect() as conn:
         ensure_space(conn, space_id)
         for item in find_same_page_matches(conn, space_id, required_terms, query, min(limit, 12)):
             seen_chunk_ids.add(item["chunk_id"])
+            seen_chunk_ids.update(int(chunk_id) for chunk_id in item.get("source_chunk_ids", []))
+            item["score"] = 3.0
             results.append(item)
+
+        if has_embedding_backend:
+            for _ in range(8):
+                if backfill_space_embeddings(conn, space_id, batch_size=64) == 0:
+                    break
+            for item in semantic_rank_chunks(query, load_space_embeddings(conn, space_id), min(limit * 3, 36)):
+                if item["chunk_id"] in seen_chunk_ids:
+                    continue
+                item["snippet"] = make_snippet(item["text"], query, expanded_terms, radius=110)
+                item["semantic_match"] = True
+                item["score"] = 2.0 + float(item.get("semantic_score", 0.0))
+                results.append(item)
+                seen_chunk_ids.add(item["chunk_id"])
 
         if fts_query:
             try:
@@ -531,6 +548,7 @@ def search(space_id: int, payload: SearchRequest) -> dict:
                     if item["chunk_id"] in seen_chunk_ids:
                         continue
                     seen_chunk_ids.add(item["chunk_id"])
+                    item["score"] = 1.5
                     results.append(item)
             except Exception:
                 pass
@@ -562,6 +580,7 @@ def search(space_id: int, payload: SearchRequest) -> dict:
             if item["chunk_id"] in seen_chunk_ids:
                 continue
             item["snippet"] = make_snippet(item["text"], query, expanded_terms)
+            item["score"] = 1.0
             results.append(item)
             seen_chunk_ids.add(item["chunk_id"])
             if len(results) >= limit:
@@ -570,7 +589,8 @@ def search(space_id: int, payload: SearchRequest) -> dict:
         for item in results:
             item["context_text"] = build_chunk_context(conn, item["document_id"], item["chunk_id"])
 
-    search_mode = "same_page" if len(required_terms) >= 2 else "local"
+    results.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    search_mode = "hybrid" if has_embedding_backend else ("same_page" if len(required_terms) >= 2 else "local")
     return {
         "query": query,
         "expanded_terms": expanded_terms,
@@ -822,6 +842,7 @@ def find_same_page_matches(
             continue
         first = dict(page_rows[0])
         page_text = "\n".join(row["text"] for row in page_rows if row["text"].strip())
+        first["source_chunk_ids"] = [int(row["chunk_id"]) for row in page_rows]
         first["location_label"] = f"Page {page['page_number']} · 同页命中"
         first["snippet"] = make_snippet(page_text, query, required_terms, radius=130)
         first["text"] = page_text[:2500]
