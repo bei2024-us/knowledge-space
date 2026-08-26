@@ -1,7 +1,7 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { StatusBar } from 'expo-status-bar';
-import React, { Component, ReactNode, useEffect, useMemo, useState } from 'react';
+import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -90,6 +90,7 @@ type DocumentPreview = DocumentItem & {
 
 type SearchResult = {
   chunk_id: number;
+  document_id: number;
   filename: string;
   folder_name?: string;
   location_label: string;
@@ -111,6 +112,113 @@ const emptySpace: Space = {
   document_count: 0,
   chunk_count: 0,
 };
+
+// 解析音视频 chunk 的 location_label，提取媒体类型与起止时间戳
+// 格式：Video 00:23 -> 01:12, segment 3  或  Audio 01:05:00 -> 01:06:30, segment 12
+type MediaClip = {
+  kind: 'audio' | 'video';
+  startSec: number;
+  endSec: number;
+};
+
+function parseMediaLabel(label: string): MediaClip | null {
+  const m = label.match(/^(Audio|Video)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*->\s*(\d{1,2}:\d{2}(?::\d{2})?)/);
+  if (!m) return null;
+  return {
+    kind: m[1].toLowerCase() as 'audio' | 'video',
+    startSec: tsToSec(m[2]),
+    endSec: tsToSec(m[3]),
+  };
+}
+
+function tsToSec(ts: string): number {
+  const parts = ts.split(':').map(Number);
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
+
+function fmtSec(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+// 音视频片段播放器：Web 端用原生 HTML5 audio/video，点击"播放此片段"seek 到起止时间
+function MediaClipPlayer({ documentId, clip }: { documentId: number; clip: MediaClip }) {
+  const ref = useRef<any>(null);
+  const [playing, setPlaying] = useState(false);
+
+  const seekAndPlay = () => {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      el.currentTime = clip.startSec;
+      void el.play();
+      setPlaying(true);
+    } catch {
+      // 某些浏览器需要用户手势，忽略
+    }
+  };
+
+  const handleTimeUpdate = () => {
+    const el = ref.current;
+    if (!el || !playing) return;
+    if (el.currentTime >= clip.endSec) {
+      el.pause();
+      setPlaying(false);
+    }
+  };
+
+  if (Platform.OS !== 'web') {
+    return (
+      <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>
+        音视频播放仅在 Web 端可用
+      </Text>
+    );
+  }
+
+  const src = `${API_BASE}/documents/${documentId}/file`;
+  const mediaEl = React.createElement(clip.kind, {
+    ref,
+    src,
+    controls: true,
+    preload: 'metadata',
+    onTimeUpdate: handleTimeUpdate,
+    style: {
+      width: '100%',
+      maxWidth: 640,
+      marginTop: 8,
+      height: clip.kind === 'video' ? 'auto' : 48,
+      borderRadius: 8,
+    },
+  });
+
+  return (
+    <View style={{ marginTop: 8 }}>
+      <Pressable
+        onPress={seekAndPlay}
+        style={{
+          flexDirection: 'row',
+          alignSelf: 'flex-start',
+          paddingVertical: 6,
+          paddingHorizontal: 12,
+          backgroundColor: playing ? '#dcfce7' : '#eff6ff',
+          borderRadius: 16,
+          borderWidth: 1,
+          borderColor: playing ? '#16a34a' : '#2563eb',
+        }}
+      >
+        <Text style={{ color: playing ? '#16a34a' : '#2563eb', fontSize: 13, fontWeight: '600' }}>
+          {playing ? '播放中' : '播放此片段'}（{fmtSec(clip.startSec)} - {fmtSec(clip.endSec)}）
+        </Text>
+      </Pressable>
+      {mediaEl}
+    </View>
+  );
+}
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { message: string | null }> {
   state = { message: null };
@@ -739,12 +847,16 @@ function KnowledgeSpaceApp() {
                 <Text style={styles.smallButtonText}>原文件</Text>
               </Pressable>
             </View>
-            {preview.chunks.slice(0, 8).map(chunk => (
-              <View key={chunk.chunk_id} style={styles.previewChunk}>
-                <Text style={styles.previewLocation}>{chunk.location_label}</Text>
-                <Text style={styles.previewText}>{chunk.text}</Text>
-              </View>
-            ))}
+            {preview.chunks.slice(0, 8).map(chunk => {
+              const clip = parseMediaLabel(chunk.location_label);
+              return (
+                <View key={chunk.chunk_id} style={styles.previewChunk}>
+                  <Text style={styles.previewLocation}>{chunk.location_label}</Text>
+                  <Text style={styles.previewText}>{chunk.text}</Text>
+                  {clip && <MediaClipPlayer documentId={preview.id} clip={clip} />}
+                </View>
+              );
+            })}
           </View>
         )}
 
@@ -771,6 +883,13 @@ function KnowledgeSpaceApp() {
                 </View>
                 <Text style={styles.resultText}>{stripMarkers(result.snippet || result.text)}</Text>
                 {expanded && <Text style={styles.fullText}>{result.text}</Text>}
+                {expanded && (() => {
+                  const clip = parseMediaLabel(result.location_label);
+                  if (clip) {
+                    return <MediaClipPlayer documentId={result.document_id} clip={clip} />;
+                  }
+                  return null;
+                })()}
                 <Text style={styles.expandHint}>{expanded ? '收起片段' : '点击查看完整片段'}</Text>
               </Pressable>
             );
