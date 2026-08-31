@@ -1,17 +1,26 @@
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable
 
 
-OCR_TESSDATA_DIR = Path(r"D:\firstmodel\ocr-tools\tessdata")
-TESSERACT_DIR = Path(r"C:\Program Files\Tesseract-OCR")
-QPDF_DIR = Path(r"D:\firstmodel\ocr-tools\qpdf\qpdf-12.3.2-msvc64\bin")
+def _optional_path(name: str) -> Path | None:
+    value = os.getenv(name, "").strip()
+    return Path(value) if value else None
+
+
+OCR_TESSDATA_DIR = _optional_path("OCR_TESSDATA_DIR") or _optional_path("TESSDATA_PREFIX")
+TESSERACT_DIR = _optional_path("TESSERACT_DIR")
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", "").strip()
+QPDF_DIR = _optional_path("QPDF_DIR")
 GHOSTSCRIPT_DIRS = [
-    Path(r"D:\firstmodel\ocr-tools\ghostscript\bin"),
-    Path(r"D:\firstmodel\ocr-tools\ghostscript-user\bin"),
-    Path(r"D:\firstmodel\ocr-tools\GhostscriptPortable\App\Ghostscript\bin"),
+    Path(part)
+    for part in os.getenv("GHOSTSCRIPT_DIRS", "").split(os.pathsep)
+    if part.strip()
 ]
 
 AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".webm"}
@@ -107,11 +116,13 @@ def run_ocrmypdf(source: Path, target: Path) -> tuple[str, str]:
         return "needs_ocr", "OCRmyPDF is not installed on this computer"
 
     env = os.environ.copy()
-    if OCR_TESSDATA_DIR.exists():
+    if OCR_TESSDATA_DIR and OCR_TESSDATA_DIR.exists():
         env["TESSDATA_PREFIX"] = str(OCR_TESSDATA_DIR)
-    if TESSERACT_DIR.exists():
+    if TESSERACT_DIR and TESSERACT_DIR.exists():
         env["PATH"] = f"{TESSERACT_DIR}{os.pathsep}{env.get('PATH', '')}"
-    for tool_dir in [QPDF_DIR, *GHOSTSCRIPT_DIRS]:
+    tool_dirs = [QPDF_DIR] if QPDF_DIR else []
+    tool_dirs.extend(GHOSTSCRIPT_DIRS)
+    for tool_dir in tool_dirs:
         if tool_dir.exists():
             env["PATH"] = f"{tool_dir}{os.pathsep}{env.get('PATH', '')}"
 
@@ -432,3 +443,190 @@ class _AsrModelStore:
 
 
 _asr_model_store = _AsrModelStore()
+
+
+# ---------------------------------------------------------------------------
+# 代码截图 OCR 恢复 —— 很多 PDF 把“代码”当作截图/图片嵌入，PyMuPDF 的文本层
+# 一个字都取不到（例如整本叫“R代码.pdf”却 0 段能被识别为 R 代码）。这里在后台
+# 对“像代码截图”的页做 OCR，只保留“像代码的行”，作为额外 chunk 补进库里。
+#
+# 关键取舍：
+#   · 只“补充代码”，不“替换正文”—— 中文正文的内嵌文本层往往是干净的，OCR 反而更差；
+#   · 只 OCR“图片占比高”的页（代码截图页），跳过纯文字页，省时间；
+#   · 顺序渲染（PyMuPDF 的 Document 非线程安全）、并行跑 tesseract（慢在这一步）。
+# ---------------------------------------------------------------------------
+
+OCR_RENDER_ZOOM = float(os.getenv("OCR_CODE_ZOOM", "3.0"))       # ~216 DPI，实测足够认出代码
+OCR_IMAGE_AREA_RATIO = float(os.getenv("OCR_CODE_AREA_RATIO", "0.10"))  # 图片占页面≥10% 才算“代码截图页”
+OCR_MAX_PAGES = int(os.getenv("OCR_CODE_MAX_PAGES", "80"))       # 单个文档最多 OCR 的页数上限
+OCR_PER_PAGE_TIMEOUT = int(os.getenv("OCR_CODE_PAGE_TIMEOUT", "60"))
+OCR_MAX_WORKERS = int(os.getenv("OCR_CODE_WORKERS", "0")) or min((os.cpu_count() or 4), 8)
+
+# “像代码的行”要命中的语法记号：赋值 / 管道 / 比较 / 函数调用 / $取列。
+# 注意：不能只凭“出现了括号或方括号”就算代码 —— OCR 噪声（如 "E35] RBS |) gta"）
+# 里散落的括号会被误判成代码，反而把乱码塞进搜索结果。所以这里要求出现
+# “标识符(” 的调用形式、“标识符=”的赋值，或明确的运算符。
+_CODE_TOKEN_RE = re.compile(
+    r"<-|<<-|%>%|\|>|->|!=|==|>=|<=|[A-Za-z_.][\w.]*\s*\(|\$[A-Za-z.]|[A-Za-z_.][\w.]*\s*="
+)
+
+# “强代码行”：含赋值或管道。用来确认一页 OCR 结果里确实有代码，而不只是控制台
+# 输出表头（如 "Estinate Std.Error t value Pr(>|t|)"）或散落的符号噪声。
+_CODE_STRONG_RE = re.compile(r"<-|<<-|%>%|\|>|[A-Za-z_.][\w.]*\s*=[^=]")
+
+
+def _tesseract_env() -> dict:
+    env = os.environ.copy()
+    if OCR_TESSDATA_DIR and OCR_TESSDATA_DIR.exists():
+        env["TESSDATA_PREFIX"] = str(OCR_TESSDATA_DIR)
+    if TESSERACT_DIR and TESSERACT_DIR.exists():
+        env["PATH"] = f"{TESSERACT_DIR}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
+def _tesseract_exe() -> str | None:
+    if TESSERACT_CMD:
+        return TESSERACT_CMD
+    if TESSERACT_DIR:
+        candidate = TESSERACT_DIR / "tesseract.exe"
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("tesseract")
+
+
+def _page_image_ratio(page) -> float:
+    """这一页里图片覆盖的面积占整页的比例（用来判断是不是代码截图页）。"""
+    try:
+        rect = page.rect
+        page_area = float(rect.width) * float(rect.height)
+        if page_area <= 0:
+            return 0.0
+        covered = 0.0
+        for info in page.get_image_info():
+            bbox = info.get("bbox")
+            if not bbox:
+                continue
+            w = max(0.0, float(bbox[2]) - float(bbox[0]))
+            h = max(0.0, float(bbox[3]) - float(bbox[1]))
+            covered += w * h
+        return covered / page_area
+    except Exception:
+        # 取不到图片信息时，退化为“有没有图片”
+        try:
+            return 1.0 if page.get_images() else 0.0
+        except Exception:
+            return 0.0
+
+
+def looks_like_code_line(line: str) -> bool:
+    """一行文本“像不像代码”：以 ASCII 为主 + 含代码语法记号。中文正文/标题会被排除。"""
+    s = line.strip()
+    if len(s) < 3:
+        return False
+    non_space = [ch for ch in s if not ch.isspace()]
+    if not non_space:
+        return False
+    ascii_cnt = sum(1 for ch in non_space if ord(ch) < 128)
+    if ascii_cnt / len(non_space) < 0.6:
+        return False
+    # 代码截图 OCR 出来的代码行基本是纯 ASCII；夹带多个汉字的多半是公式说明或
+    # 中文标题（例如 "本总体 P ——~ Z = (21,22,...)"），不当作代码。
+    cjk_cnt = sum(1 for ch in s if "一" <= ch <= "鿿")
+    if cjk_cnt > 2:
+        return False
+    return bool(_CODE_TOKEN_RE.search(s))
+
+
+def _keep_code_lines(ocr_text: str) -> str:
+    """从一页 OCR 文本里只挑出“像代码的行”，拼成一段。达不到质量门槛时返回空串。"""
+    code_lines = [ln.rstrip() for ln in ocr_text.splitlines() if looks_like_code_line(ln)]
+    joined = "\n".join(code_lines)
+    # 至少要有一定量，避免单个误判行也建 chunk
+    if len(joined.replace("\n", "")) < 24 and len(code_lines) < 2:
+        return ""
+    # 必须至少有一行真正的赋值/管道，否则大概率只是 R 控制台输出表头或 OCR 噪声
+    if not any(_CODE_STRONG_RE.search(ln) for ln in code_lines):
+        return ""
+    return joined
+
+
+def _ocr_png(png_path: Path, exe: str, env: dict) -> str:
+    """对单张 PNG 跑 tesseract（chi_sim+eng, psm 6），返回识别文本；失败返回空串。"""
+    try:
+        completed = subprocess.run(
+            [exe, str(png_path), "stdout", "-l", "chi_sim+eng", "--psm", "6"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=OCR_PER_PAGE_TIMEOUT,
+            env=env,
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout or ""
+
+
+def ocr_code_chunks(pdf_path: Path) -> list[tuple[str, str]]:
+    """对 PDF 里“代码截图页”做 OCR，抽取代码行，返回 [(label, text), ...]。
+
+    label 形如 "Page 13 代码(OCR)"，保留 "Page N" 前缀以便前端页码跳转 (parse_page_number)。
+    任何环节失败都安全降级为空列表，绝不抛异常影响上传主流程。
+    """
+    exe = _tesseract_exe()
+    if not exe:
+        return []
+    try:
+        import fitz
+    except Exception:
+        return []
+
+    env = _tesseract_env()
+    tmp_dir = Path(tempfile.mkdtemp(prefix="code_ocr_"))
+    rendered: list[tuple[int, Path]] = []   # (page_number, png_path)
+    try:
+        try:
+            doc = fitz.open(pdf_path)
+        except Exception:
+            return []
+        matrix = fitz.Matrix(OCR_RENDER_ZOOM, OCR_RENDER_ZOOM)
+        try:
+            # 顺序渲染候选页（fitz 的 Document 非线程安全）
+            for page_index, page in enumerate(doc, start=1):
+                if len(rendered) >= OCR_MAX_PAGES:
+                    break
+                if _page_image_ratio(page) < OCR_IMAGE_AREA_RATIO:
+                    continue
+                try:
+                    pix = page.get_pixmap(matrix=matrix)
+                    png_path = tmp_dir / f"p{page_index}.png"
+                    pix.save(str(png_path))
+                    rendered.append((page_index, png_path))
+                except Exception:
+                    continue
+        finally:
+            doc.close()
+
+        if not rendered:
+            return []
+
+        # 并行 OCR（tesseract 是子进程，能真正并行）
+        def worker(item: tuple[int, Path]) -> tuple[int, str]:
+            page_number, png_path = item
+            return page_number, _ocr_png(png_path, exe, env)
+
+        chunks: list[tuple[str, str]] = []
+        with ThreadPoolExecutor(max_workers=OCR_MAX_WORKERS) as pool:
+            for page_number, ocr_text in pool.map(worker, rendered):
+                code_text = _keep_code_lines(ocr_text)
+                if code_text:
+                    chunks.append((f"Page {page_number} 代码(OCR)", code_text))
+        chunks.sort(key=lambda c: c[0])
+        return chunks
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass

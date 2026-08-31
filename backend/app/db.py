@@ -15,8 +15,16 @@ def ensure_storage() -> None:
 
 def connect() -> sqlite3.Connection:
     ensure_storage()
-    conn = sqlite3.connect(DB_PATH)
+    # timeout + busy_timeout：后台 OCR 线程写库、前台搜索读库可能并发，
+    # 用 WAL 允许“读写并行”，用 busy_timeout 让偶发的锁等待而不是直接报错
+    # （此前日志里出现过 "database is locked" —— 两个搜索同时 backfill 向量所致）。
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 

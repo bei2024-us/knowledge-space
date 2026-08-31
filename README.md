@@ -11,12 +11,14 @@ MindSpace 是一个面向学习资料和工作资料管理的移动优先知识�
 - 扫描件处理：PDF 文本不足时可通过 OCRmyPDF 尝试 OCR。
 - 音视频转写：通过 faster-whisper 将音频或视频内容转写为带时间戳的片段。
 - 语义搜索增强：可选安装 FlagEmbedding，使用 BGE-M3 进行本地向量检索。
+- DeepSeek 智能整理：可选接入 DeepSeek 文本模型，将检索片段整理成带引用的中文回答。
+- 视觉理解增强：可选接入 DeepSeek 视觉模型，把 PDF 原页渲染为图片后辅助理解公式、代码截图和复杂版面。
 - 移动端体验：提供 Expo + React Native 移动端原型，也提供浏览器 Web 演示页。
 
 ## 技术栈
 
-- Backend：FastAPI、SQLite、PyMuPDF、python-docx、jieba、OCRmyPDF、faster-whisper、NumPy。
-- Optional AI Search：FlagEmbedding、BAAI/bge-m3。
+- Backend：FastAPI、SQLite、PyMuPDF、python-docx、jieba、OCRmyPDF、faster-whisper、NumPy、httpx。
+- Optional AI：DeepSeek Chat / Vision API、FlagEmbedding、BAAI/bge-m3。
 - Frontend：Expo、React Native、TypeScript、react-native-web。
 - Storage：本地 SQLite 数据库和本地上传文件目录。
 
@@ -29,7 +31,8 @@ knowledge-space/
 │   │   ├── main.py          # FastAPI 接口、搜索、预览、上传逻辑
 │   │   ├── db.py            # SQLite 表结构和存储路径
 │   │   ├── parsers.py       # 文档解析、OCR、音视频 ASR
-│   │   └── embeddings.py    # 可选语义向量检索
+│   │   ├── embeddings.py    # 可选语义向量检索
+│   │   └── llm.py           # 可选 DeepSeek 智能整理与视觉理解
 │   ├── static/
 │   │   ├── app-ui.html      # Web 演示页面
 │   │   └── upload-ui.html
@@ -118,6 +121,45 @@ npm run start
 
 ## 可选增强能力
 
+### DeepSeek 智能整理
+
+基础上传、预览和搜索不需要 DeepSeek API Key。如果需要启用“AI 整理”，请在后端运行前配置：
+
+Windows PowerShell：
+
+```powershell
+$env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
+```
+
+macOS / Linux：
+
+```bash
+export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
+```
+
+也可以把 Key 写入本地文件：
+
+```text
+backend/data/deepseek_key.txt
+```
+
+`backend/data/deepseek_key.txt` 已被 `.gitignore` 排除，不会提交到仓库。未配置 Key 时，`/summarize` 接口会返回“未配置 AI”的提示，搜索主流程仍然正常运行。
+
+可选环境变量：
+
+```bash
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_VISION_MODEL=deepseek-v4-flash-vision-exp
+LLM_TIMEOUT=30
+LLM_VISION_TIMEOUT=180
+LLM_MAX_CONTEXT_CHARS=6000
+LLM_MAX_TOKENS=2500
+LLM_VISION_MAX_TOKENS=6000
+```
+
+AI 整理流程会先读取本地检索结果，再把片段、文件名、页码/段落等来源信息交给 DeepSeek，生成带引用编号的回答。对于 OCR 不稳定的 PDF 页面，系统可以把命中页渲染成 PNG 原图交给视觉模型，以提高公式、代码截图和复杂版面内容的理解效果。
+
 ### 语义搜索
 
 基础搜索无需额外模型。如果需要启用本地语义搜索，可以在后端虚拟环境中安装：
@@ -158,6 +200,18 @@ ASR_DTYPE=int8
 ASR_LANG=zh
 ```
 
+### OCR 工具路径
+
+默认情况下系统会从 PATH 中查找 `ocrmypdf`、`tesseract`、`qpdf` 和 Ghostscript。若工具安装在特殊目录，可通过环境变量指定：
+
+```bash
+OCR_TESSDATA_DIR=/path/to/tessdata
+TESSERACT_DIR=/path/to/tesseract-folder
+TESSERACT_CMD=/path/to/tesseract
+QPDF_DIR=/path/to/qpdf-bin
+GHOSTSCRIPT_DIRS=/path/to/ghostscript-bin
+```
+
 ## 主要接口
 
 - `GET /health`：后端健康检查。
@@ -172,6 +226,7 @@ ASR_LANG=zh
 - `GET /documents/{document_id}/viewer`：查看文档预览页。
 - `GET /documents/{document_id}/file`：获取原始文件。
 - `POST /spaces/{space_id}/search`：在空间内搜索资料片段。
+- `POST /spaces/{space_id}/summarize`：使用 DeepSeek 对检索片段进行带引用的 AI 整理。
 - `GET /spaces/{space_id}/word-cloud`：生成空间词云。
 - `GET /documents/{document_id}/word-cloud`：生成单个文档词云。
 
@@ -183,6 +238,7 @@ ASR_LANG=zh
 
 - `.env`、`.env.*`
 - `backend/data/`
+- `backend/data/deepseek_key.txt`
 - `*.sqlite3`、`*.db`
 - `mobile/node_modules/`
 - `mobile/android/`、`mobile/ios/`
@@ -192,4 +248,4 @@ ASR_LANG=zh
 
 ## 当前状态
 
-MindSpace 当前实现了从资料上传、文本解析、片段入库、空间搜索、来源定位、文档预览、词云展示到移动端展示的完整原型链路。适合用于黑客松初赛 Demo，后续可继续扩展 RAG 问答、多用户账号、云端同步和更完整的移动端发布流程。
+MindSpace 当前实现了从资料上传、文本解析、片段入库、空间搜索、来源定位、DeepSeek 智能整理、PDF 原页视觉辅助理解、文档预览、词云展示到移动端展示的完整原型链路。即使未配置 DeepSeek API Key，评委也可以直接运行基础知识库与搜索功能；配置 Key 后可体验 AI 整理与视觉增强能力。后续可继续扩展 RAG 问答、多用户协作、云端同步和更完整的移动端发布流程。

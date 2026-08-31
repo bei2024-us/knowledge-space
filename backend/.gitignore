@@ -1,0 +1,8 @@
+# 密钥 / 本地配置（切勿提交）
+data/deepseek_key.txt
+.env
+
+# 运行期数据与缓存
+data/tmp/
+__pycache__/
+*.pyc

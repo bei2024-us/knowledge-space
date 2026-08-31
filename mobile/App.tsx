@@ -5,6 +5,7 @@ import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } fro
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Linking,
   Platform,
   NativeModules,
@@ -19,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 const API_PORT = 8000;
 const API_BASE = resolveApiBase();
-const APP_VERSION = 'same-page-search-v8';
+const APP_VERSION = 'vision-summary-v10';
 
 function resolveApiBase() {
   const configured = getConfiguredApiBase();
@@ -96,6 +97,24 @@ type SearchResult = {
   location_label: string;
   snippet: string;
   text: string;
+  /** PDF 片段所在页码（后端从 location_label 解析）；非 PDF 为 null */
+  page_number?: number | null;
+};
+
+type AiCitation = {
+  n: number;
+  chunk_id: number;
+  filename: string;
+  location_label: string;
+};
+
+type AiSummary = {
+  usable: boolean;
+  answer: string;
+  citations?: AiCitation[];
+  message?: string;
+  /** AI 实际看了几页原图（代码截图/公式页的真实内容只能从原图读到） */
+  used_images?: number;
 };
 
 type CloudWord = {
@@ -220,6 +239,50 @@ function MediaClipPlayer({ documentId, clip }: { documentId: number; clip: Media
   );
 }
 
+// 把 AI 文本里的 **加粗** 渲染成真正的加粗；其余原样返回。
+function renderInlineBold(text: string, keyPrefix: string): ReactNode[] {
+  const segments = text.split(/(\*\*[^*]+\*\*)/g).filter(seg => seg.length > 0);
+  return segments.map((seg, i) => {
+    if (seg.length >= 4 && seg.startsWith('**') && seg.endsWith('**')) {
+      return (
+        <Text key={`${keyPrefix}-b${i}`} style={styles.aiBold}>
+          {seg.slice(2, -2)}
+        </Text>
+      );
+    }
+    return <Text key={`${keyPrefix}-t${i}`}>{seg}</Text>;
+  });
+}
+
+// 去掉行首的 Markdown 记号（#、>、- * 列表、行内 ` `），列表符号换成圆点。
+function cleanMarkdownLine(line: string): string {
+  let s = line.replace(/^\s{0,3}#{1,6}\s*/, '');
+  s = s.replace(/^\s{0,3}>\s?/, '');
+  s = s.replace(/^\s{0,3}[-*+]\s+/, '• ');
+  s = s.replace(/`([^`]+)`/g, '$1');
+  return s;
+}
+
+// 朴素渲染 AI 回答：按行清掉 Markdown 记号，把 **加粗** 变成真正加粗，避免满屏 ** 和 #。
+function AiAnswer({ text }: { text: string }) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  return (
+    <View>
+      {lines.map((raw, idx) => {
+        const line = cleanMarkdownLine(raw);
+        if (line.trim().length === 0) {
+          return <View key={`aigap-${idx}`} style={styles.aiGap} />;
+        }
+        return (
+          <Text key={`ailn-${idx}`} style={styles.aiText}>
+            {renderInlineBold(line, `ailn-${idx}`)}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
 class AppErrorBoundary extends Component<{ children: ReactNode }, { message: string | null }> {
   state = { message: null };
 
@@ -266,6 +329,8 @@ function KnowledgeSpaceApp() {
   const [query, setQuery] = useState('');
   const [expandedTerms, setExpandedTerms] = useState<string[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [aiSummary, setAiSummary] = useState<AiSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [expandedResultId, setExpandedResultId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
@@ -312,7 +377,7 @@ function KnowledgeSpaceApp() {
   }
 
   async function loadSpaceData(spaceId: number, preferredFolderId: number | null = activeFolderId) {
-    const [nextFolders] = await Promise.all([loadFolders(spaceId), loadDocuments(spaceId), loadWordCloud(spaceId)]);
+    const [nextFolders] = await Promise.all([loadFolders(spaceId), loadDocuments(spaceId)]);
     if (preferredFolderId && nextFolders.some(folder => folder.id === preferredFolderId)) {
       setActiveFolderId(preferredFolderId);
     } else {
@@ -352,9 +417,9 @@ function KnowledgeSpaceApp() {
     }
   }
 
-  async function loadWordCloud(spaceId: number) {
+  async function loadDocumentWordCloud(documentId: number) {
     try {
-      const response = await fetch(`${API_BASE}/spaces/${spaceId}/word-cloud`);
+      const response = await fetch(`${API_BASE}/documents/${documentId}/word-cloud`);
       if (!response.ok) throw new Error('Failed to load word cloud');
       const data = await response.json();
       setCloudWords(data.words || []);
@@ -443,10 +508,12 @@ function KnowledgeSpaceApp() {
 
   async function openDocument(documentId: number) {
     setLoading(true);
+    setCloudWords([]);
     try {
       const response = await fetch(`${API_BASE}/documents/${documentId}`);
       if (!response.ok) throw new Error('Preview failed');
       setPreview(await response.json());
+      void loadDocumentWordCloud(documentId);
     } catch {
       Alert.alert('预览失败', '文件已经上传，但暂时无法读取预览文本。');
     } finally {
@@ -487,11 +554,26 @@ function KnowledgeSpaceApp() {
     }
   }
 
+  /** 定位到搜索结果所在的原文页：打开阅读器并自动滚动、蓝框标出那一页。 */
+  async function locateInDocument(documentId: number, pageNumber?: number | null) {
+    const url = pageNumber
+      ? `${API_BASE}/documents/${documentId}/viewer?focus_page=${pageNumber}`
+      : `${API_BASE}/documents/${documentId}/viewer`;
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) throw new Error('unsupported');
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('无法打开', '系统没有找到可以打开网页的应用。');
+    }
+  }
+
   async function searchSpace() {
     const text = query.trim();
     if (!text || !activeSpace.id) return;
     setLoading(true);
     setExpandedResultId(null);
+    setAiSummary(null);
 
     try {
       const response = await fetch(`${API_BASE}/spaces/${activeSpace.id}/search`, {
@@ -503,10 +585,33 @@ function KnowledgeSpaceApp() {
       const data = await response.json();
       setExpandedTerms(data.expanded_terms || []);
       setResults(data.results || []);
+      void summarizeResults(text, data.results || []);
     } catch {
       Alert.alert('搜索失败', '没有连上电脑端服务，或文档还没有解析完成。');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function summarizeResults(text: string, list: SearchResult[]) {
+    if (!text || !activeSpace.id || list.length === 0) return;
+    setSummaryLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/spaces/${activeSpace.id}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: text,
+          chunk_ids: list.slice(0, 8).map(item => item.chunk_id),
+        }),
+      });
+      if (!response.ok) throw new Error('Summarize failed');
+      const data = await response.json();
+      setAiSummary(data);
+    } catch {
+      setAiSummary({ usable: false, answer: '', message: 'AI 总结失败，请检查电脑端服务。' });
+    } finally {
+      setSummaryLoading(false);
     }
   }
 
@@ -780,36 +885,7 @@ function KnowledgeSpaceApp() {
           <Pressable style={styles.secondaryButton} onPress={() => setView('upload')}>
             <Text style={styles.secondaryButtonText}>上传到{activeFolder ? `「${activeFolder.name}」` : '文件夹'}</Text>
           </Pressable>
-          <Pressable style={styles.secondaryButton} onPress={() => loadWordCloud(activeSpace.id)}>
-            <Text style={styles.secondaryButtonText}>刷新词云</Text>
-          </Pressable>
         </View>
-
-        <Text style={styles.sectionTitle}>资料词云</Text>
-        {cloudWords.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>暂无词云</Text>
-            <Text style={styles.emptyText}>上传资料并解析后，这里会显示高频概念。</Text>
-          </View>
-        ) : (
-          <View style={styles.cloudBox}>
-            {cloudWords.slice(0, 30).map((word, index) => (
-              <Text
-                key={`${word.text}-${index}`}
-                style={[
-                  styles.cloudWord,
-                  {
-                    fontSize: Math.min(24, 12 + word.weight * 1.4),
-                    backgroundColor: index % 3 === 0 ? '#e0f2fe' : index % 3 === 1 ? '#ecfdf5' : '#fef3c7',
-                    color: index % 3 === 0 ? '#0369a1' : index % 3 === 1 ? '#047857' : '#92400e',
-                  },
-                ]}
-              >
-                {word.text}
-              </Text>
-            ))}
-          </View>
-        )}
 
         <Text style={styles.sectionTitle}>{activeFolder ? `${activeFolder.name}里的资料` : '已上传资料'}</Text>
         {shownDocuments.length === 0 ? (
@@ -857,12 +933,69 @@ function KnowledgeSpaceApp() {
                 </View>
               );
             })}
+            {cloudWords.length > 0 && (
+              <View style={styles.docCloudBox}>
+                <Text style={styles.docCloudTitle}>本资料词云</Text>
+                <View style={styles.cloudBox}>
+                  {cloudWords.slice(0, 30).map((word, index) => (
+                    <Text
+                      key={`${word.text}-${index}`}
+                      style={[
+                        styles.cloudWord,
+                        {
+                          fontSize: Math.min(24, 12 + word.weight * 1.4),
+                          backgroundColor: index % 3 === 0 ? '#e0f2fe' : index % 3 === 1 ? '#ecfdf5' : '#fef3c7',
+                          color: index % 3 === 0 ? '#0369a1' : index % 3 === 1 ? '#047857' : '#92400e',
+                        },
+                      ]}
+                    >
+                      {word.text}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+            )}
           </View>
         )}
 
         {loading && <ActivityIndicator color="#2563eb" style={styles.loader} />}
 
         <Text style={styles.sectionTitle}>搜索结果</Text>
+
+        {(summaryLoading || aiSummary) && (
+          <View style={styles.aiPanel}>
+            <Text style={styles.aiTitle}>AI 整理</Text>
+            {summaryLoading ? (
+              <View style={styles.aiLoadingRow}>
+                <ActivityIndicator color="#2563eb" />
+                {/* 明确说在读原图：视觉模型逐字抄代码要几十秒，不说清会以为卡住了 */}
+                <Text style={styles.aiHint}>AI 正在阅读原文页面并整理，约需 30-60 秒…</Text>
+              </View>
+            ) : aiSummary?.usable ? (
+              <>
+                <AiAnswer text={aiSummary.answer} />
+                {aiSummary.used_images ? (
+                  <Text style={styles.aiHint}>
+                    已读取 {aiSummary.used_images} 页原图，代码与公式按原图逐字整理
+                  </Text>
+                ) : null}
+                {aiSummary.citations && aiSummary.citations.length > 0 && (
+                  <View style={styles.aiCiteBox}>
+                    {aiSummary.citations.map(cite => (
+                      <Text key={cite.n} style={styles.aiCite}>
+                        【{cite.n}】{cite.filename}
+                        {cite.location_label ? ` · ${cite.location_label}` : ''}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+              </>
+            ) : (
+              <Text style={styles.aiHint}>{aiSummary?.message || '暂无 AI 整理。'}</Text>
+            )}
+          </View>
+        )}
+
         {results.length === 0 && !loading ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>还没有结果</Text>
@@ -871,6 +1004,7 @@ function KnowledgeSpaceApp() {
         ) : (
           results.map(result => {
             const expanded = expandedResultId === result.chunk_id;
+            const hasPage = !!result.page_number;
             return (
               <Pressable
                 key={result.chunk_id}
@@ -890,7 +1024,29 @@ function KnowledgeSpaceApp() {
                   }
                   return null;
                 })()}
-                <Text style={styles.expandHint}>{expanded ? '收起片段' : '点击查看完整片段'}</Text>
+                {expanded && hasPage ? (
+                  <View style={styles.pageImageBox}>
+                    <Text style={styles.pageImageLabel}>
+                      原文第 {result.page_number} 页（公式、代码按原样显示）
+                    </Text>
+                    <Image
+                      source={{ uri: `${API_BASE}/documents/${result.document_id}/pages/${result.page_number}.png?zoom=2.2` }}
+                      style={styles.pageImage}
+                      resizeMode="contain"
+                    />
+                  </View>
+                ) : null}
+                <View style={styles.resultActions}>
+                  <Text style={styles.expandHint}>{expanded ? '收起片段' : '点击查看完整片段'}</Text>
+                  <Pressable
+                    style={styles.locateButton}
+                    onPress={() => locateInDocument(result.document_id, result.page_number)}
+                  >
+                    <Text style={styles.locateButtonText}>
+                      {hasPage ? `定位到第 ${result.page_number} 页` : '打开原文'}
+                    </Text>
+                  </Pressable>
+                </View>
               </Pressable>
             );
           })
@@ -1354,6 +1510,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     fontWeight: '800',
   },
+  docCloudBox: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eef2f7',
+  },
+  docCloudTitle: {
+    color: '#2563eb',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
   loader: {
     marginTop: 20,
   },
@@ -1489,6 +1657,55 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
   },
+  aiPanel: {
+    marginTop: 4,
+    marginBottom: 8,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: '#f8fbff',
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+  },
+  aiTitle: {
+    color: '#1d4ed8',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  aiLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  aiText: {
+    color: '#1f2937',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  aiBold: {
+    fontWeight: '800',
+    color: '#111827',
+  },
+  aiGap: {
+    height: 8,
+  },
+  aiCiteBox: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    gap: 2,
+  },
+  aiCite: {
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  aiHint: {
+    color: '#64748b',
+    fontSize: 13,
+    lineHeight: 20,
+  },
   resultCard: {
     padding: 16,
     borderRadius: 22,
@@ -1533,6 +1750,45 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     marginTop: 10,
+  },
+  resultActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  locateButton: {
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  locateButtonText: {
+    color: '#1d4ed8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  pageImageBox: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eef2f7',
+  },
+  pageImageLabel: {
+    color: '#64748b',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  pageImage: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: 12,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e5edf6',
   },
   uploadPanel: {
     minHeight: 420,
